@@ -4,7 +4,12 @@ import re
 from datetime import datetime, timezone
 
 
-def generate_report(specs: list, session_id: str, project_name: str = "") -> str:
+def generate_report(
+    specs: list,
+    session_id: str,
+    project_name: str = "",
+    verification_summary: dict = None,
+) -> str:
     """Build a markdown spec report from a list of HardwareSpec objects.
 
     Parameters
@@ -15,6 +20,9 @@ def generate_report(specs: list, session_id: str, project_name: str = "") -> str
         Session identifier.
     project_name : str
         Optional project name for the report title.
+    verification_summary : dict, optional
+        Output from SpecSessionManager.get_summary(). When provided, a
+        Verification Status section is appended after Architectural Constraints.
 
     Returns
     -------
@@ -212,6 +220,62 @@ def generate_report(specs: list, session_id: str, project_name: str = "") -> str
     else:
         lines.append("No architectural constraints derived.")
         lines.append("")
+
+    # ── Section 9: Verification Status ────────────────────────────────
+    if verification_summary is not None:
+        total_v = verification_summary.get("total_verifications", 0)
+        confirmed_v = verification_summary.get("confirmed", 0)
+        disputed_v = verification_summary.get("disputed", 0)
+        corrected_v = verification_summary.get("corrected", 0)
+        conf_rate = verification_summary.get("confirmation_rate", 0.0)
+
+        lines.append("## 9. Verification Status")
+        lines.append(f"- Total fields verified: {total_v}")
+        if total_v > 0:
+            lines.append(f"- Confirmed: {confirmed_v} ({conf_rate}%)")
+            lines.append(f"- Corrected: {corrected_v}")
+            lines.append(f"- Disputed: {disputed_v}")
+            unverified = total_v - confirmed_v - corrected_v - disputed_v
+            if unverified < 0:
+                unverified = 0
+            lines.append(f"- Unverified: {unverified}")
+        else:
+            lines.append("- No verification data available.")
+        lines.append("")
+
+        # Corrections Applied table
+        corrections = verification_summary.get("corrections", [])
+        if corrections:
+            lines.append("### Corrections Applied")
+            lines.append("| Field | Original | Corrected | Expert | Evidence |")
+            lines.append("|-------|----------|-----------|--------|----------|")
+            for c in corrections:
+                field_name = c.get("field", "")
+                old_val = c.get("old_value", "")
+                new_val = c.get("new_value", "")
+                expert = c.get("expert", "")
+                evidence = c.get("evidence", "")
+                lines.append(f"| {field_name} | {old_val} | {new_val} | {expert} | {evidence} |")
+            lines.append("")
+
+        # Disputes table
+        disputes = verification_summary.get("disputes", [])
+        if disputes:
+            lines.append("### Disputes")
+            lines.append("| Field | Expert | Evidence |")
+            lines.append("|-------|--------|----------|")
+            for d in disputes:
+                field_name = d.get("field", "")
+                expert = d.get("expert", "")
+                evidence = d.get("evidence", "")
+                lines.append(f"| {field_name} | {expert} | {evidence} |")
+            lines.append("")
+
+        # Experts involved
+        experts = verification_summary.get("experts_involved", [])
+        if experts:
+            lines.append(f"### Verification Experts: {', '.join(experts)}")
+            lines.append("")
 
     return "\n".join(lines)
 

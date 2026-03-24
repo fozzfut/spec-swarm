@@ -1,6 +1,8 @@
 """MCP Server for SpecSwarm -- hardware specification analysis tools."""
 
 import json
+import logging
+import secrets
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -10,18 +12,23 @@ from .models import (
 )
 from .spec_store import SpecStore
 from .expert_profiler import ExpertProfiler
+from .session_manager import SpecSessionManager, SpecVerification
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
 class AppContext:
     store: SpecStore
     profiler: ExpertProfiler
+    verification_mgr: SpecSessionManager
 
 
 def create_app_context() -> AppContext:
     store = SpecStore()
     profiler = ExpertProfiler()
-    return AppContext(store=store, profiler=profiler)
+    verification_mgr = SpecSessionManager()
+    return AppContext(store=store, profiler=profiler, verification_mgr=verification_mgr)
 
 
 def create_mcp_server():
@@ -847,12 +854,15 @@ def create_mcp_server():
         description=(
             "Generate a Hardware Specification Report from the current session. "
             "This report serves as input for ArchSwarm architecture analysis. "
+            "If verification_session is provided, the report includes a Verification "
+            "Status section with confirmed, corrected, and disputed items. "
             "Saved to swarm-kb and returned as markdown."
         ),
     )
     def _spec_generate_report(
         session_id: str,
         output_path: str = "",
+        verification_session: str = "",
         ctx: Optional[Context] = None,
     ) -> str:
         from pathlib import Path
@@ -874,7 +884,18 @@ def create_mcp_server():
         if not project_name:
             project_name = session_id
 
-        report_md = generate_report(specs, session_id, project_name=project_name)
+        # Get verification summary if a verification session was provided
+        verification_summary = None
+        if verification_session:
+            try:
+                verification_summary = app.verification_mgr.get_summary(verification_session)
+            except KeyError:
+                _log.warning("Verification session %s not found, skipping verification section", verification_session)
+
+        report_md = generate_report(
+            specs, session_id, project_name=project_name,
+            verification_summary=verification_summary,
+        )
 
         # Save report to session directory
         sess_dir = app.store._session_dir(session_id)
@@ -908,6 +929,7 @@ def create_mcp_server():
             "type": "spec_report",
             "report_path": str(report_file),
             "kb_posted": kb_posted,
+            "verification_session": verification_session or None,
         })
 
         # Build summary stats
@@ -921,7 +943,7 @@ def create_mcp_server():
         from .report_generator import extract_arch_constraints
         arch_constraints = extract_arch_constraints(specs)
 
-        return json.dumps({
+        result = {
             "report": report_md,
             "report_path": str(report_file),
             "posted_to_swarm_kb": kb_posted,
@@ -935,7 +957,19 @@ def create_mcp_server():
                 "memory_regions": total_memory,
                 "arch_constraints_derived": len(arch_constraints),
             },
-        }, indent=2)
+        }
+
+        if verification_summary is not None:
+            result["verification"] = {
+                "session": verification_session,
+                "total_verifications": verification_summary.get("total_verifications", 0),
+                "confirmed": verification_summary.get("confirmed", 0),
+                "disputed": verification_summary.get("disputed", 0),
+                "corrected": verification_summary.get("corrected", 0),
+                "confirmation_rate": verification_summary.get("confirmation_rate", 0.0),
+            }
+
+        return json.dumps(result, indent=2)
 
     # ── Summary ──────────────────────────────────────────────────────
 
@@ -1015,5 +1049,596 @@ def create_mcp_server():
                 "findings": len(session.findings),
             },
         }, indent=2)
+
+    # ── Verification Session Management ─────────────────────────────
+
+    @mcp.tool(
+        name="spec_start_verification",
+        description=(
+            "Start a multi-agent verification session for extracted specs. "
+            "Experts will cross-check all data."
+        ),
+    )
+    def _spec_start_verification(
+        session_id: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        # Validate the spec session exists
+        spec_session = app.store.get_session(session_id)
+        specs = spec_session.specs
+        if not specs:
+            return json.dumps({"error": "No specs in session. Ingest or add specs first."})
+
+        vsess_id = app.verification_mgr.start_session(
+            project_path=spec_session.project_path,
+            name=f"verification-{session_id}",
+        )
+
+        components = []
+        for s in specs:
+            components.append({
+                "spec_id": s.id,
+                "name": s.name or s.id,
+                "registers": len(s.registers),
+                "pins": len(s.pins),
+                "protocols": len(s.protocols),
+                "timing": len(s.timing),
+            })
+
+        return json.dumps({
+            "verification_session": vsess_id,
+            "spec_session": session_id,
+            "components_to_verify": components,
+            "phases": [
+                {"phase": 1, "name": "Independent Verification"},
+                {"phase": 2, "name": "Cross-Check"},
+                {"phase": 3, "name": "Resolve Disputes"},
+                {"phase": 4, "name": "Generate Report"},
+            ],
+            "status": "active",
+        }, indent=2)
+
+    # ── Expert Coordination ───────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_claim_component",
+        description="Claim a component/spec for verification. Prevents duplicate work.",
+    )
+    def _spec_claim_component(
+        session_id: str,
+        spec_id: str,
+        expert_role: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        result = app.verification_mgr.claim_spec(session_id, spec_id, expert_role)
+        return json.dumps(result, indent=2)
+
+    @mcp.tool(
+        name="spec_release_component",
+        description="Release a claimed component.",
+    )
+    def _spec_release_component(
+        session_id: str,
+        spec_id: str,
+        expert_role: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        result = app.verification_mgr.release_spec(session_id, spec_id, expert_role)
+        return json.dumps(result, indent=2)
+
+    # ── Verification ──────────────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_verify",
+        description=(
+            "Verify an extracted spec field. Confirm accuracy, dispute if wrong, "
+            "or correct with evidence."
+        ),
+    )
+    def _spec_verify(
+        session_id: str,
+        spec_id: str,
+        expert_role: str,
+        field_path: str,
+        status: str,
+        evidence: str = "",
+        corrected_value: str = "",
+        confidence: float = 0.9,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+
+        if status not in ("confirm", "dispute", "correct"):
+            return json.dumps({"error": f"Invalid status: {status}. Must be confirm|dispute|correct."})
+        if status == "correct" and not corrected_value:
+            return json.dumps({"error": "corrected_value is required when status='correct'."})
+        if not evidence:
+            return json.dumps({"error": "evidence is required. Include page number and table/figure reference."})
+
+        verification = SpecVerification(
+            spec_id=spec_id,
+            field_path=field_path,
+            expert_role=expert_role,
+            status=status,
+            corrected_value=corrected_value,
+            evidence=evidence,
+            confidence=confidence,
+        )
+        vid = app.verification_mgr.post_verification(session_id, verification)
+
+        return json.dumps({
+            "verification_id": vid,
+            "spec_id": spec_id,
+            "field_path": field_path,
+            "status": status,
+            "expert_role": expert_role,
+            "evidence": evidence,
+            "recorded": True,
+        }, indent=2)
+
+    @mcp.tool(
+        name="spec_get_verifications",
+        description="Get verification results. Filter by spec, expert, or status.",
+    )
+    def _spec_get_verifications(
+        session_id: str,
+        spec_id: str = "",
+        expert_role: str = "",
+        status: str = "",
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        results = app.verification_mgr.get_verifications(
+            session_id, spec_id=spec_id, expert_role=expert_role, status=status,
+        )
+        return json.dumps({
+            "verifications": results,
+            "count": len(results),
+        }, indent=2)
+
+    @mcp.tool(
+        name="spec_verification_status",
+        description=(
+            "Get aggregated verification status for a component: "
+            "how many confirmed, disputed, corrected."
+        ),
+    )
+    def _spec_verification_status(
+        session_id: str,
+        spec_id: str = "",
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        if spec_id:
+            result = app.verification_mgr.get_verification_status(session_id, spec_id)
+            return json.dumps(result, indent=2)
+
+        # If no spec_id, return status for all specs in the verification session
+        verifications = app.verification_mgr.get_verifications(session_id)
+        spec_ids = sorted({v["spec_id"] for v in verifications})
+        all_status = []
+        for sid in spec_ids:
+            all_status.append(
+                app.verification_mgr.get_verification_status(session_id, sid)
+            )
+
+        total_checks = sum(s["total_checks"] for s in all_status)
+        total_confirmed = sum(s["confirmed"] for s in all_status)
+        total_disputed = sum(s["disputed"] for s in all_status)
+        total_corrected = sum(s["corrected"] for s in all_status)
+
+        return json.dumps({
+            "session_id": session_id,
+            "specs": all_status,
+            "totals": {
+                "total_checks": total_checks,
+                "confirmed": total_confirmed,
+                "disputed": total_disputed,
+                "corrected": total_corrected,
+                "confirmation_rate": round(total_confirmed / total_checks * 100, 1) if total_checks > 0 else 0.0,
+            },
+        }, indent=2)
+
+    # ── Messaging ─────────────────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_send_message",
+        description="Send a message to another spec expert about a verification question.",
+    )
+    def _spec_send_message(
+        session_id: str,
+        sender: str,
+        recipient: str,
+        content: str,
+        context_id: str = "",
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        msg_id = app.verification_mgr.send_message(
+            session_id, sender, recipient, content, context_id=context_id,
+        )
+        return json.dumps({"message_id": msg_id, "sent": True}, indent=2)
+
+    @mcp.tool(
+        name="spec_get_inbox",
+        description="Get pending messages for a spec expert.",
+    )
+    def _spec_get_inbox(
+        session_id: str,
+        expert_role: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        messages = app.verification_mgr.get_inbox(session_id, expert_role)
+        return json.dumps({
+            "messages": messages,
+            "count": len(messages),
+        }, indent=2)
+
+    @mcp.tool(
+        name="spec_broadcast",
+        description="Broadcast a message to all spec experts.",
+    )
+    def _spec_broadcast(
+        session_id: str,
+        sender: str,
+        content: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        msg_id = app.verification_mgr.broadcast(session_id, sender, content)
+        return json.dumps({"message_id": msg_id, "broadcast": True}, indent=2)
+
+    # ── Phases ────────────────────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_mark_phase_done",
+        description="Mark that an expert completed a verification phase.",
+    )
+    def _spec_mark_phase_done(
+        session_id: str,
+        expert_role: str,
+        phase: int,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        result = app.verification_mgr.mark_phase_done(session_id, expert_role, phase)
+        return json.dumps(result, indent=2)
+
+    @mcp.tool(
+        name="spec_check_phase_ready",
+        description="Check if all experts completed a verification phase.",
+    )
+    def _spec_check_phase_ready(
+        session_id: str,
+        phase: int,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        result = app.verification_mgr.check_phase_ready(session_id, phase)
+        return json.dumps(result, indent=2)
+
+    # ── Debate Trigger ────────────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_start_debate",
+        description=(
+            "Start a debate when experts disagree on spec interpretation. "
+            "Uses swarm-kb debate engine."
+        ),
+    )
+    def _spec_start_debate(
+        session_id: str,
+        topic: str,
+        context: str = "",
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+
+        debate_id: str
+        try:
+            from swarm_kb.debate_engine import DebateEngine
+            from pathlib import Path
+            debates_path = Path.home() / ".swarm-kb" / "debates" / "active"
+            debates_path.mkdir(parents=True, exist_ok=True)
+            engine = DebateEngine(debates_path)
+            debate = engine.start_debate(
+                topic=topic,
+                context=context,
+                source_tool="spec",
+            )
+            debate_id = debate.id
+        except ImportError:
+            _log.warning("swarm-kb debate engine not available; generating local debate id")
+            debate_id = "dbt-" + secrets.token_hex(4)
+        except Exception as exc:
+            _log.warning("Failed to start swarm-kb debate: %s", exc)
+            debate_id = "dbt-" + secrets.token_hex(4)
+
+        # Broadcast the debate to all experts
+        app.verification_mgr.broadcast(
+            session_id,
+            "system",
+            f"Debate started: {topic} (debate_id={debate_id}). "
+            f"Use kb_propose, kb_critique, kb_vote to participate.",
+        )
+
+        return json.dumps({
+            "debate_id": debate_id,
+            "topic": topic,
+            "context": context,
+            "source_tool": "spec",
+            "instructions": (
+                f"Experts should use kb_propose(debate_id='{debate_id}', ...) to propose "
+                f"interpretations with datasheet page references. "
+                f"Use kb_critique() to challenge proposals. "
+                f"Use kb_vote() to vote. "
+                f"Use kb_resolve_debate('{debate_id}') when voting is complete."
+            ),
+        }, indent=2)
+
+    # ── Verification Summary ──────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_verification_summary",
+        description=(
+            "Get full verification summary: confirmed, disputed, corrected, "
+            "unverified items."
+        ),
+    )
+    def _spec_verification_summary(
+        session_id: str,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+        summary = app.verification_mgr.get_summary(session_id)
+        return json.dumps(summary, indent=2)
+
+    # ── Orchestrator ──────────────────────────────────────────────────
+
+    @mcp.tool(
+        name="orchestrate_verification",
+        description=(
+            "Plan a multi-agent spec verification. Returns step-by-step instructions "
+            "for AI agents to cross-check all extracted specs. Agents read the original "
+            "documents and verify every register, pin, protocol, and timing value."
+        ),
+    )
+    def _orchestrate_verification(
+        session_id: str,
+        max_agents: int = 5,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        app = _get_app(ctx)
+
+        # 1. Get specs from the spec session
+        spec_session = app.store.get_session(session_id)
+        specs = spec_session.specs
+        if not specs:
+            return json.dumps({"error": "No specs in session. Ingest or add specs first."})
+
+        # 2. Start a verification session
+        vsess_id = app.verification_mgr.start_session(
+            project_path=spec_session.project_path,
+            name=f"verification-{session_id}",
+        )
+
+        # 3. Analyze specs to determine agent roles
+        components_info: list[str] = []
+        total_registers = 0
+        total_pins = 0
+        total_protocols = 0
+        total_timing = 0
+        protocols_used: set[str] = set()
+        categories_used: set[str] = set()
+
+        for s in specs:
+            reg_count = len(s.registers)
+            pin_count = len(s.pins)
+            proto_count = len(s.protocols)
+            timing_count = len(s.timing)
+            total_registers += reg_count
+            total_pins += pin_count
+            total_protocols += proto_count
+            total_timing += timing_count
+
+            parts = [f"{s.name or s.id}"]
+            if reg_count:
+                parts.append(f"{reg_count} registers")
+            if pin_count:
+                parts.append(f"{pin_count} pins")
+            if proto_count:
+                parts.append(f"{proto_count} protocols")
+            if timing_count:
+                parts.append(f"{timing_count} timing constraints")
+            components_info.append(f"{parts[0]} ({', '.join(parts[1:])})" if len(parts) > 1 else parts[0])
+
+            if s.category:
+                categories_used.add(s.category.lower())
+            for p in s.protocols:
+                if p.protocol:
+                    protocols_used.add(p.protocol.upper())
+
+        # 4. Determine expert agents based on spec content
+        agents: list[dict] = []
+        agent_count = 0
+
+        # Always include MCU/register expert if registers present
+        if total_registers > 0 and agent_count < max_agents:
+            agents.append({
+                "role": "mcu-peripherals",
+                "focus": "Register addresses, field names, reset values, access modes, clock tree",
+            })
+            agent_count += 1
+
+        # Communication protocols expert
+        if total_protocols > 0 and agent_count < max_agents:
+            agents.append({
+                "role": "communication-protocols",
+                "focus": f"Protocol configuration: {', '.join(sorted(protocols_used))} -- speeds, modes, pin assignments",
+            })
+            agent_count += 1
+
+        # Timing expert
+        if total_timing > 0 and agent_count < max_agents:
+            agents.append({
+                "role": "timing-constraints",
+                "focus": "All timing values match datasheet -- setup/hold times, clock frequencies, delays",
+            })
+            agent_count += 1
+
+        # Pin configuration expert
+        if total_pins > 0 and agent_count < max_agents:
+            agents.append({
+                "role": "pin-configuration",
+                "focus": "Pin assignments, alternate functions, pull-up/down, drive strength",
+            })
+            agent_count += 1
+
+        # Power/memory expert
+        has_power = any(len(s.power) > 0 for s in specs)
+        has_memory = any(len(s.memory_map) > 0 for s in specs)
+        if (has_power or has_memory) and agent_count < max_agents:
+            agents.append({
+                "role": "power-memory",
+                "focus": "Power supply rails, voltage ranges, current limits, memory map regions and sizes",
+            })
+            agent_count += 1
+
+        # 5. Build source documents list
+        source_docs = sorted({s.source_doc for s in specs if s.source_doc})
+
+        # 6. Build agent instructions for each phase
+        # Phase 1: Independent Verification
+        phase1_instructions: list[dict] = []
+        for agent in agents:
+            role = agent["role"]
+            docs_note = ""
+            if source_docs:
+                docs_note = (
+                    f" Use kb_read_document to read the original PDFs: {', '.join(source_docs)}."
+                )
+
+            phase1_instructions.append({
+                "agent_role": role,
+                "description": (
+                    f"Read the ORIGINAL DOCUMENT (not just extracted data).{docs_note} "
+                    f"Focus on: {agent['focus']}. "
+                    f"For EVERY field in your domain, call spec_claim_component() first, "
+                    f"then call spec_verify() for each field with status='confirm', 'dispute', "
+                    f"or 'correct'. Reference specific page numbers, table numbers, and "
+                    f"figure numbers as evidence. "
+                    f"Call spec_mark_phase_done(phase=1) when complete."
+                ),
+                "tools_to_use": [
+                    "spec_claim_component", "spec_verify",
+                    "kb_read_document", "spec_mark_phase_done",
+                ],
+            })
+
+        # Phase 2: Cross-Check
+        phase2_instructions: list[dict] = []
+        for agent in agents:
+            role = agent["role"]
+            phase2_instructions.append({
+                "agent_role": role,
+                "description": (
+                    f"Read ALL verifications from Phase 1 via spec_get_verifications(). "
+                    f"Cross-check other experts' work: do timing values in protocols match "
+                    f"timing constraints? Do pin speeds support the configured clock rates? "
+                    f"Are register addresses consistent with the memory map? "
+                    f"Flag any inconsistency via spec_verify(status='dispute') with evidence. "
+                    f"Use spec_send_message() to ask other experts clarifying questions. "
+                    f"Call spec_mark_phase_done(phase=2) when complete."
+                ),
+                "tools_to_use": [
+                    "spec_get_verifications", "spec_verify",
+                    "spec_send_message", "spec_mark_phase_done",
+                ],
+            })
+
+        # Phase 3: Resolve Disputes
+        phase3_instructions = [{
+            "description": (
+                "Check spec_verification_status() for disputes. For each dispute, "
+                "start spec_start_debate() with the topic and context from the dispute. "
+                "Experts propose interpretations with page references via kb_propose(). "
+                "Critique each other's proposals via kb_critique(). "
+                "Vote via kb_vote(). "
+                "Resolve via kb_resolve_debate() when voting is complete. "
+                "Call spec_mark_phase_done(phase=3) when all disputes are resolved."
+            ),
+            "tools_to_use": [
+                "spec_verification_status", "spec_start_debate",
+                "kb_propose", "kb_critique", "kb_vote",
+                "kb_resolve_debate", "spec_mark_phase_done",
+            ],
+        }]
+
+        # Phase 4: Generate Report
+        phase4_instructions = [{
+            "description": (
+                "Call spec_verification_summary() to confirm all items are verified. "
+                "Then call spec_generate_report() to produce the final verified "
+                "specification report. The report will include a Verification Status "
+                "section showing confirmed, corrected, and resolved disputes."
+            ),
+            "tools_to_use": [
+                "spec_verification_summary", "spec_generate_report",
+            ],
+        }]
+
+        plan = {
+            "verification_session": vsess_id,
+            "spec_session": session_id,
+            "components_to_verify": components_info,
+            "agents": agents,
+            "phases": [
+                {
+                    "phase": 1,
+                    "name": "Independent Verification",
+                    "description": (
+                        "Each expert reads the ORIGINAL DOCUMENT (not just extracted data) "
+                        "and verifies fields in their domain."
+                    ),
+                    "instructions": phase1_instructions,
+                },
+                {
+                    "phase": 2,
+                    "name": "Cross-Check",
+                    "description": (
+                        "Each expert reviews OTHER experts' verifications. Look for: "
+                        "missed errors, disagreements, inconsistencies between components."
+                    ),
+                    "instructions": phase2_instructions,
+                },
+                {
+                    "phase": 3,
+                    "name": "Resolve Disputes",
+                    "description": (
+                        "If any disputes exist, start a debate. All experts participate."
+                    ),
+                    "instructions": phase3_instructions,
+                },
+                {
+                    "phase": 4,
+                    "name": "Generate Report",
+                    "description": (
+                        "After all verifications, generate the final verified spec report."
+                    ),
+                    "instructions": phase4_instructions,
+                },
+            ],
+            "summary": (
+                f"Verification session ready. {len(agents)} agents will cross-check "
+                f"{total_registers} registers, {total_pins} pins, "
+                f"{total_protocols} protocols, {total_timing} timing constraints "
+                f"across {len(specs)} components. Execute 4 phases in order."
+            ),
+        }
+        return json.dumps(plan, indent=2)
 
     return mcp

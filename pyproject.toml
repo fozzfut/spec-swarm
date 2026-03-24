@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spec-swarm-ai"
-version = "0.1.2"
+version = "0.1.3"
 description = "Hardware specification analyzer for embedded software development -- datasheets, register maps, protocols, constraints"
 readme = "README.md"
 license = {text = "MIT"}
