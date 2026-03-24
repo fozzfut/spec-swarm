@@ -122,7 +122,7 @@ class ProtocolConfig:
     notes: str = ""
 
     def to_dict(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if v != "" and v != 0 and k != "pins"}
+        d = {k: v for k, v in self.__dict__.items() if v != "" and k != "pins"}
         if self.pins:
             d["pins"] = [p.to_dict() for p in self.pins]
         return d

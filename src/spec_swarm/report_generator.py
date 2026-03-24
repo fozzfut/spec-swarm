@@ -230,15 +230,12 @@ def generate_report(
         conf_rate = verification_summary.get("confirmation_rate", 0.0)
 
         lines.append("## 9. Verification Status")
-        lines.append(f"- Total fields verified: {total_v}")
+        lines.append(f"- Fields checked: {total_v}")
         if total_v > 0:
-            lines.append(f"- Confirmed: {confirmed_v} ({conf_rate}%)")
-            lines.append(f"- Corrected: {corrected_v}")
-            lines.append(f"- Disputed: {disputed_v}")
-            unverified = total_v - confirmed_v - corrected_v - disputed_v
-            if unverified < 0:
-                unverified = 0
-            lines.append(f"- Unverified: {unverified}")
+            pct = conf_rate
+            lines.append(f"  - Confirmed: {confirmed_v} ({pct}%)")
+            lines.append(f"  - Corrected: {corrected_v}")
+            lines.append(f"  - Disputed: {disputed_v}")
         else:
             lines.append("- No verification data available.")
         lines.append("")

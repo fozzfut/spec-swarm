@@ -1154,6 +1154,7 @@ def create_mcp_server():
         status: str,
         evidence: str = "",
         corrected_value: str = "",
+        original_value: str = "",
         confidence: float = 0.9,
         ctx: Optional[Context] = None,
     ) -> str:
@@ -1171,6 +1172,7 @@ def create_mcp_server():
             field_path=field_path,
             expert_role=expert_role,
             status=status,
+            original_value=original_value,
             corrected_value=corrected_value,
             evidence=evidence,
             confidence=confidence,
@@ -1537,7 +1539,9 @@ def create_mcp_server():
                     f"Focus on: {agent['focus']}. "
                     f"For EVERY field in your domain, call spec_claim_component() first, "
                     f"then call spec_verify() for each field with status='confirm', 'dispute', "
-                    f"or 'correct'. Reference specific page numbers, table numbers, and "
+                    f"or 'correct'. For corrections, include original_value (the extracted "
+                    f"value) and corrected_value (the correct value from the datasheet). "
+                    f"Reference specific page numbers, table numbers, and "
                     f"figure numbers as evidence. "
                     f"Call spec_mark_phase_done(phase=1) when complete."
                 ),
