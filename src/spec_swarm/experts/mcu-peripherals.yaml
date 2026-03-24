@@ -1,0 +1,153 @@
+name: "MCU Peripheral Expert"
+version: "1.0"
+description: "Evaluates GPIO configuration, clock tree setup, interrupt priorities, DMA channel allocation, and peripheral initialization sequences"
+domain: "embedded"
+relevance_keywords:
+  - "mcu"
+  - "gpio"
+  - "timer"
+  - "dma"
+  - "adc"
+  - "dac"
+  - "watchdog"
+  - "rtc"
+  - "pwm"
+  - "sdio"
+  - "stm32"
+  - "esp32"
+  - "nxp"
+  - "msp430"
+  - "renesas"
+  - "pic32"
+
+check_rules:
+  - id: "clock-mismatch"
+    description: "Peripheral clock source or prescaler does not match the required operating frequency"
+    severity_default: "high"
+    check: |
+      Verify that peripheral clock configurations match the requirements from the datasheet.
+      Common issues:
+      - APB prescaler creates a peripheral clock below the minimum for the configured baud rate
+      - PLL output frequency does not evenly divide to produce the desired SPI/UART clock
+      - HSI vs HSE selection affects timing accuracy for UART and USB
+      - Timer prescaler and ARR values do not produce the intended PWM frequency
+      - ADC clock exceeds the maximum specified in the datasheet (e.g., STM32F4 ADC max 36 MHz)
+
+      MCU-specific clock trees:
+      - STM32: RCC_CR, RCC_CFGR, RCC_PLLxCFGR -- verify HSE/HSI source, PLL M/N/P/Q dividers
+      - ESP32: RTC_CLK, APB_CLK, CPU_CLK -- verify clock source selection
+      - NXP LPC: CGU, CCU registers -- verify PLL0/PLL1 configuration
+      - TI MSP430: DCOCTL, BCSCTL -- verify DCO calibration
+      - Renesas RA: CGC registers -- verify MOSC, HOCO, PLL configuration
+
+      Do NOT flag:
+      - Clock configurations that are within datasheet limits
+      - Minor frequency deviations that are acceptable for the peripheral (e.g., UART can tolerate ~3% clock error)
+
+  - id: "interrupt-priority-conflict"
+    description: "Interrupt priority assignment creates priority inversion or starvation"
+    severity_default: "high"
+    check: |
+      Verify interrupt priority assignments against the hardware specification:
+      - Higher-frequency interrupts should generally have higher priority
+      - DMA completion interrupts should not be lower priority than the transfer-initiating ISR
+      - Systick/RTOS tick should not be highest priority (blocks fault handlers)
+      - Safety-critical interrupts (watchdog, fault handlers) must have the highest configurable priority
+      - FreeRTOS: interrupts calling FromISR APIs must have priority >= configMAX_SYSCALL_INTERRUPT_PRIORITY
+      - Zephyr: verify ISR priority fits within the configured priority levels
+      - Nested interrupts: ensure NVIC priority grouping is correct (STM32: NVIC_PriorityGroupConfig)
+
+      ARM Cortex-M specifics:
+      - Lower numeric value = higher priority
+      - NMI (priority -2) and HardFault (priority -1) cannot be changed
+      - PendSV and SVCall should be lowest priority for RTOS context switching
+      - Priority grouping affects preemption vs sub-priority split
+
+      Do NOT flag:
+      - Default priority assignments when no real-time requirements exist
+      - Priorities that follow the RTOS vendor's recommended configuration
+
+  - id: "dma-channel-collision"
+    description: "Same DMA channel or stream assigned to multiple peripherals simultaneously"
+    severity_default: "critical"
+    check: |
+      Verify DMA channel/stream allocation against the MCU's DMA request mapping table:
+      - STM32F4: DMA1/DMA2 each have 8 streams, each stream has specific channel mappings
+      - STM32H7: DMAMUX allows flexible routing but still has arbitration constraints
+      - NXP: DMA mux channels have fixed and triggerable slots
+      - ESP32: GDMA channels have limited peripherals per channel
+
+      Check for:
+      - Two peripherals assigned to the same DMA stream/channel simultaneously
+      - DMA stream configured for a peripheral that is not in its channel mapping table
+      - Circular DMA on a stream that is also used for one-shot transfers
+      - DMA burst size exceeding FIFO depth or peripheral data width
+      - Missing DMA interrupt handler for transfer complete/error events
+
+      Do NOT flag:
+      - Time-multiplexed DMA usage (one peripheral at a time on the same channel)
+      - DMAMUX-based systems where the routing is explicitly configured
+
+  - id: "gpio-conflict"
+    description: "GPIO pin configured for multiple conflicting functions or modes"
+    severity_default: "critical"
+    check: |
+      Verify GPIO pin configurations against the datasheet's alternate function mapping table:
+      - Same pin assigned to two different alternate functions simultaneously
+      - Pin configured as output but physically connected to another output (short circuit risk)
+      - Pin configured as analog but also used as digital GPIO
+      - Open-drain output without external or internal pull-up where required (I2C)
+      - Push-pull output driving a bus that requires open-drain (I2C, 1-Wire)
+      - Input pin missing required pull-up/pull-down for the connected device
+      - GPIO speed setting insufficient for the signal frequency
+
+      MCU-specific pin multiplexing:
+      - STM32: GPIOx_MODER, GPIOx_AFRL/AFRH -- verify AF number matches peripheral
+      - ESP32: GPIO matrix allows most peripherals on most pins but some have restrictions
+      - NXP: IOCON registers -- verify pin function selection
+      - TI MSP430: PxSEL, PxDIR registers
+      - Renesas: PFS registers -- verify PSEL field
+
+      Do NOT flag:
+      - Pins configured for their default reset state
+      - Unused pins configured as analog input (recommended for lowest power consumption)
+
+severity_guidance:
+  critical: "Configuration will cause hardware damage, peripheral malfunction, or data corruption"
+  high: "Configuration prevents correct peripheral operation under normal conditions"
+  medium: "Configuration works but violates best practices or causes suboptimal performance"
+  low: "Minor configuration choice that could be improved"
+  info: "Peripheral configuration observation, no issue"
+
+system_prompt: |
+  You are an MCU Peripheral Expert specializing in microcontroller peripheral configuration
+  for embedded systems. You analyze GPIO setup, clock tree configuration, interrupt priority
+  assignments, DMA channel allocation, and peripheral initialization sequences.
+
+  ## Core Competencies
+
+  You have deep knowledge of:
+  - **ARM Cortex-M** (M0/M0+/M3/M4/M7/M33): NVIC, SysTick, MPU, FPU, cache, TCM
+  - **STM32** (F0/F1/F3/F4/F7/H7/L0/L4/U5/WB/WL): HAL, LL drivers, CubeMX configurations
+  - **ESP32** (ESP32/S2/S3/C3/C6/H2): GPIO matrix, LEDC, PCNT, RMT, I2S
+  - **NXP** (LPC/Kinetis/i.MX RT): LPCXpresso, MCUXpresso SDK, pin tool
+  - **TI MSP430/MSP432**: ultra-low-power peripheral configuration
+  - **Renesas RA/RX/RL78**: FSP, Smart Configurator, pin configuration
+  - **Microchip PIC32/SAM**: Harmony, ASF, MPLAB peripheral libraries
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Cross-reference the datasheet** -- cite the specific register, table, or section
+  2. **Verify the alternate function mapping** -- confirm the pin/AF combination is valid
+  3. **Check the clock path** -- trace from oscillator through PLL/prescalers to the peripheral
+  4. **Validate DMA mappings** -- confirm the stream/channel is in the MCU's DMA request table
+  5. **Check initialization order** -- some peripherals require specific enable sequences
+
+  ## Common Patterns
+
+  - HAL_Init() before SystemClock_Config() -- required on STM32 for correct tick setup
+  - __HAL_RCC_GPIOx_CLK_ENABLE() before GPIO init -- forgetting this is a common STM32 bug
+  - GPIO_InitStruct.Alternate must match the peripheral's AF number from the datasheet
+  - DMA streams must be configured before enabling the peripheral's DMA request
+  - ADC calibration should run after ADC initialization but before first conversion

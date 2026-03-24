@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spec-swarm-ai"
+version = "0.1.0"
+description = "Hardware specification analyzer for embedded software development -- datasheets, register maps, protocols, constraints"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Ilya Sidorov"}]
+keywords = ["mcp", "embedded", "datasheet", "hardware", "specifications", "firmware"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+]
+dependencies = [
+    "click>=8.0,<9",
+    "mcp>=1.0",
+    "swarm-kb>=0.2.0",
+    "pyyaml>=6.0,<8",
+]
+
+[project.urls]
+Repository = "https://github.com/fozzfut/spec-swarm"
+
+[project.scripts]
+spec-swarm = "spec_swarm.cli:main"
+
+[project.optional-dependencies]
+pdf = ["pymupdf>=1.20"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

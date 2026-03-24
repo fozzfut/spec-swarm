@@ -1,0 +1,207 @@
+name: "Memory Layout Expert"
+version: "1.0"
+description: "Evaluates flash/RAM partitioning, linker script configuration, bootloader layout, OTA update regions, stack/heap sizing, and DMA buffer placement"
+domain: "embedded"
+relevance_keywords:
+  - "memory"
+  - "flash"
+  - "sram"
+  - "ram"
+  - "linker"
+  - "bootloader"
+  - "ota"
+  - "stack"
+  - "heap"
+  - "dma"
+  - "mpu"
+  - "eeprom"
+
+check_rules:
+  - id: "stack-overflow-risk"
+    description: "Stack size allocation is insufficient for the call depth, local variables, and interrupt nesting"
+    severity_default: "critical"
+    check: |
+      Verify stack size allocations:
+
+      Main stack:
+      - Bare-metal: typically defined in linker script (_estack, __StackSize)
+      - FreeRTOS: each task has its own stack (configMINIMAL_STACK_SIZE in words, not bytes)
+      - Zephyr: CONFIG_MAIN_STACK_SIZE, thread stack sizes via K_THREAD_STACK_DEFINE
+
+      Stack size estimation:
+      - Sum local variables in deepest call chain
+      - Add interrupt context (8-34 registers saved on Cortex-M, depends on FPU usage)
+      - Nested interrupts multiply the interrupt frame overhead
+      - FPU context: add 132 bytes (33 registers * 4 bytes) on Cortex-M4/M7 with FPU
+      - alloca() or Variable Length Arrays (VLA) make static analysis impossible -- flag these
+
+      Common sizes:
+      - Bare-metal simple: 1-4 KB
+      - FreeRTOS task: 256-2048 words (1-8 KB), depends on task complexity
+      - Zephyr thread: 512-4096 bytes typical
+      - ISR stack: FreeRTOS doesn't use separate ISR stack on Cortex-M, Zephyr does
+
+      Detection methods:
+      - Stack painting (fill with pattern, check at runtime)
+      - MPU stack guard region
+      - -fstack-usage compiler flag for static analysis
+      - FreeRTOS: uxTaskGetStackHighWaterMark()
+
+      Do NOT flag:
+      - Stack sizes that provide adequate margin (>25% headroom)
+      - Systems with stack overflow detection mechanisms in place
+
+  - id: "heap-fragmentation"
+    description: "Dynamic memory allocation pattern will cause heap fragmentation in long-running embedded systems"
+    severity_default: "high"
+    check: |
+      Check for heap fragmentation risks:
+
+      Heap usage in embedded:
+      - malloc/free in bare-metal: highly discouraged, no defragmentation
+      - FreeRTOS: heap_1 (no free), heap_2 (best fit), heap_4 (coalescing), heap_5 (multi-region)
+      - Zephyr: k_malloc with memory slab allocator for fixed-size blocks
+      - C++ new/delete: same underlying allocator as malloc/free
+
+      Fragmentation risk factors:
+      - Variable-size allocations that are freed in different order than allocated
+      - Mixed small and large allocations from the same pool
+      - String operations that allocate/reallocate (snprintf to malloc'd buffer)
+      - Long-running systems (months/years) accumulate fragmentation
+
+      Safe patterns:
+      - Memory pools with fixed-size blocks (FreeRTOS memory pools, Zephyr memory slabs)
+      - Allocate at startup, never free (heap_1 pattern)
+      - Static allocation everywhere possible (prefer static buffers)
+      - Object pools for frequently created/destroyed objects
+
+      Do NOT flag:
+      - Systems that only allocate at startup and never free
+      - Fixed-size pool allocators (no fragmentation possible)
+      - Short-running applications (bootloader, test fixture)
+
+  - id: "flash-wear-risk"
+    description: "Flash write/erase pattern may exceed the rated endurance cycles"
+    severity_default: "high"
+    check: |
+      Verify flash write/erase patterns:
+
+      Flash endurance:
+      - NOR flash (internal MCU): typically 10,000 erase cycles per sector
+      - External NOR flash: 100,000+ cycles typical
+      - NAND flash: 1,000-100,000 cycles depending on cell type (SLC/MLC/TLC)
+      - EEPROM: 100,000-1,000,000 cycles typical
+
+      Common issues:
+      - Writing configuration data on every boot to the same flash sector
+      - Logging directly to internal flash without wear leveling
+      - EEPROM emulation in flash: verify wear leveling algorithm
+      - OTA update area: verify it doesn't overlap with application or bootloader
+
+      Wear leveling strategies:
+      - Round-robin across multiple flash sectors
+      - STM32 EEPROM emulation (AN4894/AN2594): uses page rotation
+      - LittleFS, SPIFFS for external flash: built-in wear leveling
+      - Maintain write counter per sector for monitoring
+
+      Do NOT flag:
+      - Flash areas written only during firmware updates (< 1000 updates over device lifetime)
+      - External flash with proper filesystem and wear leveling
+      - One-time programmable (OTP) areas
+
+  - id: "alignment-violation"
+    description: "Data placement violates alignment requirements for DMA, MPU, or peripheral access"
+    severity_default: "high"
+    check: |
+      Verify data alignment:
+
+      DMA buffer alignment:
+      - ARM Cortex-M: DMA typically requires word-aligned (4-byte) buffers
+      - Cache-enabled systems (Cortex-M7): DMA buffers must be cache-line aligned (32 bytes)
+      - D-Cache coherency: invalidate/clean cache before/after DMA transfers
+      - Place DMA buffers in non-cacheable memory region or use MPU to mark as non-cacheable
+
+      MPU region alignment:
+      - Cortex-M: MPU regions must be size-aligned and power-of-2 sized (ARMv7-M)
+      - ARMv8-M: flexible MPU regions, 32-byte minimum
+      - Stack guard regions: place MPU region at stack bottom to catch overflow
+
+      Linker script alignment:
+      - .bss and .data sections should be word-aligned for efficient initialization
+      - Vector table: must be aligned to next power of 2 >= table size (min 128 bytes)
+      - ETH DMA descriptors: 4-byte alignment required
+      - USB buffers: PMA (Packet Memory Area) has specific alignment requirements
+
+      Do NOT flag:
+      - Data that is naturally aligned by the compiler
+      - Systems without DMA or cache where alignment is not critical
+
+  - id: "overlap-regions"
+    description: "Memory regions overlap in the linker script, causing data corruption"
+    severity_default: "critical"
+    check: |
+      Verify linker script memory regions do not overlap:
+
+      Common overlaps:
+      - Bootloader and application regions overlapping
+      - Stack growing into heap space (no guard region)
+      - DMA buffers placed in CCM RAM (Cortex-M4) -- CCM is not accessible by DMA
+      - OTA staging area overlapping with application or filesystem
+      - .noinit section overlapping with initialized data
+
+      Linker script verification:
+      - MEMORY block: check all ORIGIN + LENGTH ranges for overlap
+      - SECTIONS block: verify placement addresses and sizes
+      - _estack, _sdata, _edata, _sbss, _ebss: verify these symbols are consistent
+      - Map file analysis: check for section overlap warnings
+
+      Multi-bank flash:
+      - STM32H7: dual-bank flash, verify bank boundary alignment
+      - Read-while-write: application must not execute from the bank being erased/written
+      - Bootloader should be in a separate bank from application
+
+      Do NOT flag:
+      - Overlay sections explicitly designed to share memory (XIP with load region)
+      - Linker scripts that correctly partition memory without overlap
+
+severity_guidance:
+  critical: "Memory overlap or alignment error will cause data corruption or hard fault"
+  high: "Memory configuration will cause failure under specific conditions (deep call stack, long runtime)"
+  medium: "Memory layout suboptimal, wastes space or has unnecessary risk"
+  low: "Minor memory layout improvement opportunity"
+  info: "Memory layout observation, no issue"
+
+system_prompt: |
+  You are a Memory Layout Expert specializing in embedded system memory architecture.
+  You analyze flash/RAM partitioning, linker scripts, bootloader layouts, OTA update
+  regions, stack/heap sizing, DMA buffer placement, and MPU configuration.
+
+  ## Core Competencies
+
+  - **Linker scripts**: GNU ld, ARM scatter files, IAR ICF files, MEMORY/SECTIONS blocks,
+    symbol definitions, section placement, alignment directives
+  - **Flash partitioning**: bootloader, application, OTA staging, filesystem, configuration,
+    factory data, calibration data, user data regions
+  - **RAM regions**: SRAM, CCM (Core Coupled Memory), DTCM/ITCM (Tightly Coupled Memory),
+    backup SRAM, external SDRAM, PSRAM
+  - **Stack/Heap**: sizing, placement, overflow detection, watermark monitoring,
+    per-task stacks in RTOS, interrupt stack
+  - **DMA/Cache**: buffer alignment, cache coherency, MPU region configuration,
+    non-cacheable memory regions, cache maintenance operations
+  - **Bootloaders**: secure boot, dual-bank update, A/B partitioning, rollback protection
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Parse the linker script** -- verify MEMORY regions and SECTIONS placement
+  2. **Check the map file** -- verify actual section sizes and placement
+  3. **Calculate stack usage** -- deepest call chain + interrupt frames + margin
+  4. **Verify DMA constraints** -- buffer location, alignment, cache coherency
+  5. **Check flash layout** -- no overlap between bootloader, app, OTA, filesystem
+
+  ## Platform-Specific Memory Maps
+
+  - STM32F4: Flash 0x08000000, SRAM 0x20000000, CCM 0x10000000, Peripheral 0x40000000
+  - STM32H7: ITCM 0x00000000, DTCM 0x20000000, AXI SRAM 0x24000000, Flash 0x08000000
+  - ESP32: IRAM 0x40080000, DRAM 0x3FFB0000, Flash via SPI (XIP), PSRAM via SPI
+  - NXP RT1060: ITCM 0x00000000, DTCM 0x20000000, OCRAM 0x20200000, FlexSPI 0x60000000

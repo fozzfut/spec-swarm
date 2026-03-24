@@ -1,0 +1,189 @@
+name: "Motor Control Expert"
+version: "1.0"
+description: "Evaluates PWM configurations, H-bridge drivers, encoder interfaces, commutation strategies, and motor protection for embedded motor control systems"
+domain: "embedded"
+relevance_keywords:
+  - "motor"
+  - "pwm"
+  - "bldc"
+  - "stepper"
+  - "encoder"
+  - "h-bridge"
+  - "foc"
+  - "pid"
+  - "servo"
+  - "driver"
+
+check_rules:
+  - id: "pwm-frequency-mismatch"
+    description: "PWM frequency does not match the motor driver or motor requirements"
+    severity_default: "high"
+    check: |
+      Verify PWM frequency configuration:
+
+      DC motors:
+      - Typical PWM frequency: 10-25 kHz (above audible range to avoid motor whine)
+      - Below 1 kHz: excessive current ripple, motor heating, audible noise
+      - Above 50 kHz: increased switching losses in driver, potential EMI issues
+      - Minimum: must be above motor's electrical time constant (L/R)
+
+      BLDC motors:
+      - Trapezoidal commutation: 10-25 kHz typical
+      - FOC (Field Oriented Control): 10-40 kHz, higher for high-speed motors
+      - PWM frequency affects current ripple and torque ripple
+
+      Stepper motors:
+      - Step frequency depends on speed and microstepping resolution
+      - Full step: 200 steps/rev, 1/16 microstep: 3200 steps/rev
+      - Maximum step rate limited by driver and motor inductance
+
+      Servo motors:
+      - Standard RC servo: 50 Hz PWM, 1-2 ms pulse width
+      - Digital servos: up to 333 Hz update rate
+      - Industrial servos: closed-loop position/velocity control
+
+      Timer configuration:
+      - STM32: TIMx_ARR and TIMx_PSC determine PWM frequency
+      - f_PWM = f_timer / ((ARR + 1) * (PSC + 1))
+      - Verify counter mode: up, down, or center-aligned (center-aligned preferred for motor control)
+
+      Do NOT flag:
+      - PWM frequencies within the motor driver's specification range
+      - Applications where audible noise is acceptable (e.g., industrial environments)
+
+  - id: "dead-time-missing"
+    description: "Complementary PWM outputs lack dead-time insertion, risking shoot-through in H-bridge"
+    severity_default: "critical"
+    check: |
+      Verify dead-time configuration for complementary PWM driving H-bridges or half-bridges:
+
+      Shoot-through occurs when both high-side and low-side transistors are ON simultaneously.
+      Dead time must be inserted between turning one off and the other on.
+
+      Dead time requirements:
+      - MOSFET: typically 100-500 ns, depends on gate charge and driver strength
+      - IGBT: typically 1-5 us, longer due to tail current
+      - GaN: 10-50 ns, shorter switching times require careful timing
+
+      STM32 advanced timers (TIM1, TIM8):
+      - DTG field in TIMx_BDTR register configures dead time
+      - Dead time = DTG[7:0] * t_DTS (prescaled timer clock)
+      - Must also set MOE (Main Output Enable) and AOE (Automatic Output Enable)
+
+      Common issues:
+      - Dead time too short: shoot-through, excessive current, driver/FET damage
+      - Dead time too long: output distortion, reduced effective duty cycle
+      - Dead time not configured at all on complementary outputs
+      - Break input (BKIN) should be connected to fault/overcurrent detection
+
+      Do NOT flag:
+      - Non-complementary PWM outputs (single-ended driving)
+      - Motor drivers with built-in dead-time generation (DRV8301, L6234)
+      - Software-generated complementary signals with explicit dead-time delays
+
+  - id: "encoder-resolution-insufficient"
+    description: "Encoder resolution is too low for the required position/speed accuracy"
+    severity_default: "medium"
+    check: |
+      Verify encoder resolution against application requirements:
+
+      Quadrature encoder:
+      - CPR (Counts Per Revolution) = 4 * PPR (Pulses Per Revolution) with x4 decoding
+      - Position resolution: 360 degrees / CPR
+      - Speed measurement: f_pulse = RPM * PPR / 60
+      - Minimum CPR for FOC: typically 1000-4000 for smooth commutation
+
+      Timer configuration for encoder mode:
+      - STM32: TIMx in encoder interface mode (SMS=001/010/011)
+      - Auto-reload register (ARR) should match CPR-1 for revolution counting
+      - Encoder filter: TIMx_SMCR ETF bits for noise rejection
+      - Capture frequency must be > 2x maximum pulse frequency (Nyquist)
+
+      Hall sensor commutation:
+      - 6-step commutation requires 3 Hall sensors at 120-degree spacing
+      - Hall state change frequency = electrical_RPM * pole_pairs / 10
+      - Timer capture mode for Hall commutation timing
+
+      Index pulse:
+      - Used for absolute position reference
+      - Must be captured reliably at all speeds
+      - Configure as timer trigger or external interrupt
+
+      Do NOT flag:
+      - Encoder resolution that provides adequate accuracy for the application
+      - Applications using sensorless control (back-EMF, observer-based)
+
+  - id: "overcurrent-protection-missing"
+    description: "Motor drive circuit lacks overcurrent detection and shutdown mechanism"
+    severity_default: "critical"
+    check: |
+      Verify overcurrent protection is implemented:
+
+      Hardware protection:
+      - Current sense resistor (shunt) in low-side or high-side path
+      - Comparator or dedicated IC (INA240, MAX9918) for fast overcurrent detection
+      - Motor driver fault output connected to MCU break input (BKIN on STM32 TIM1/TIM8)
+      - Fuse or polyfuse for catastrophic fault protection
+
+      Software protection:
+      - ADC-based current measurement with software comparator
+      - Current limit in control loop (PI output clamp)
+      - Stall detection: excessive current with no speed feedback
+      - Thermal protection: temperature measurement on driver/motor
+
+      STM32 brake function:
+      - TIMx_BDTR: BKE (Break Enable), BKP (Break Polarity)
+      - OSSI/OSSR: Off-State Selection for Idle/Run modes
+      - Lock level: prevent accidental configuration change after setup
+
+      Common issues:
+      - No overcurrent detection at all
+      - Software-only protection with too-slow response time
+      - Break input not connected to hardware fault signal
+      - Motor driver fault pin floating or not monitored
+
+      Do NOT flag:
+      - Motor drivers with built-in overcurrent protection (most modern ICs)
+      - Low-power motors where stall current is within safe limits for all components
+
+severity_guidance:
+  critical: "Configuration will cause hardware damage (shoot-through, overcurrent, thermal destruction)"
+  high: "Configuration prevents correct motor operation or causes significant efficiency loss"
+  medium: "Motor control quality degraded but hardware is safe"
+  low: "Minor optimization opportunity for smoother operation or better efficiency"
+  info: "Motor control observation, no issue"
+
+system_prompt: |
+  You are a Motor Control Expert specializing in embedded motor drive systems.
+  You analyze PWM configurations, H-bridge/half-bridge drivers, encoder interfaces,
+  commutation strategies, current sensing, and motor protection circuits.
+
+  ## Core Competencies
+
+  - **DC motors**: PWM speed control, H-bridge driving, braking (dynamic, regenerative),
+    current limiting, soft-start, direction reversal
+  - **BLDC motors**: trapezoidal (6-step) commutation, sinusoidal commutation, FOC
+    (Field Oriented Control), Clarke/Park transforms, space vector modulation (SVPWM)
+  - **Stepper motors**: full/half/microstepping, acceleration profiles (trapezoidal, S-curve),
+    holding torque vs running torque, chopper drive configuration
+  - **Servo systems**: position/velocity/torque control loops, cascaded PID,
+    trajectory planning, encoder feedback processing
+  - **Motor drivers**: DRV8301/8302/8305 (TI), L6234/L6230 (ST), TMC2209/5160 (Trinamic),
+    A4988/DRV8825 (stepper), IR2110/IR2184 (gate drivers)
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Check the motor's datasheet** -- rated voltage, current, speed, torque, pole count
+  2. **Verify PWM timing** -- frequency, dead time, center-aligned vs edge-aligned mode
+  3. **Check the current sense path** -- shunt value, amplifier gain, ADC sampling timing
+  4. **Verify protection circuits** -- overcurrent, overvoltage, thermal, stall detection
+  5. **Validate the control loop** -- PID tuning, update rate, feedback source
+
+  ## MCU Timer Configuration for Motor Control
+
+  - STM32 Advanced Timers (TIM1, TIM8): complementary outputs, dead time, break input,
+    repetition counter for center-aligned PWM update, trigger ADC at specific PWM phase
+  - ESP32 MCPWM: dedicated motor control PWM module, fault detection, capture
+  - TI C2000: ePWM modules with high-resolution dead time, trip zone protection
+  - Renesas RA: GPT timers with complementary output and dead time

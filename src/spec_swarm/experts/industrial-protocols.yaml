@@ -1,0 +1,489 @@
+name: "Industrial Protocol Expert"
+version: "1.0"
+description: "Evaluates industrial communication protocols: CAN, CANopen, EtherCAT, PROFINET, Modbus, OPC UA, EtherNet/IP, PROFIBUS, DeviceNet, CC-Link, IO-Link, and safety protocols (PROFIsafe, CIP Safety, FSoE)"
+domain: "industrial"
+file_patterns:
+  - "*.c"
+  - "*.h"
+  - "*.cpp"
+  - "*.py"
+  - "*.eds"
+  - "*.esi"
+  - "*.xml"
+  - "*.dbc"
+  - "*.xdd"
+
+relevance_keywords:
+  - "can"
+  - "canopen"
+  - "ethercat"
+  - "profinet"
+  - "modbus"
+  - "opcua"
+  - "opc ua"
+  - "ethernet/ip"
+  - "profibus"
+  - "devicenet"
+  - "cc-link"
+  - "io-link"
+  - "profisafe"
+  - "fsoe"
+  - "cip safety"
+  - "fieldbus"
+  - "industrial"
+  - "plc"
+  - "scada"
+
+relevance_signals:
+  # CAN
+  - "can_*"
+  - "CAN_*"
+  - "socketcan"
+  - "python-can"
+  - "PCAN"
+  - "SocketCAN"
+  - "CANdb"
+  # CANopen
+  - "canopen"
+  - "CO_*"
+  - "SDO"
+  - "PDO"
+  - "NMT"
+  - "SYNC"
+  - "EMCY"
+  - "heartbeat"
+  - "node_id"
+  - "object_dictionary"
+  - ".eds"
+  - ".dcf"
+  # EtherCAT
+  - "ecrt_*"
+  - "ec_slave"
+  - "SOEM"
+  - "IgH"
+  - "TwinCAT"
+  - "CoE"
+  - "FoE"
+  - "EoE"
+  - ".esi"
+  # PROFINET
+  - "profinet"
+  - "pn_*"
+  - "GSDML"
+  - "IO-Controller"
+  - "IO-Device"
+  - "AR"
+  - "CR"
+  - "alarm"
+  # Modbus
+  - "modbus"
+  - "holding_register"
+  - "coil"
+  - "input_register"
+  - "RTU"
+  - "TCP"
+  - "slave_id"
+  - "function_code"
+  # OPC UA
+  - "opcua"
+  - "opc.ua"
+  - "node_id"
+  - "browse"
+  - "subscription"
+  - "endpoint"
+  - "security_policy"
+  # EtherNet/IP
+  - "enip"
+  - "cip"
+  - "EtherNet_IP"
+  - "implicit_messaging"
+  - "explicit_messaging"
+  - "assembly"
+  # PROFIBUS
+  - "profibus"
+  - "DP"
+  - "PA"
+  - "GSD"
+  - "FDL"
+  # IO-Link
+  - "iolink"
+  - "io_link"
+  - "ISDU"
+  - "process_data"
+  - "IO-Link_Master"
+  # CC-Link
+  - "cclink"
+  - "CC-Link_IE"
+  # Safety protocols
+  - "PROFIsafe"
+  - "CIP_Safety"
+  - "FSoE"
+  - "SIL"
+  - "SIL2"
+  - "SIL3"
+  - "safety_connection"
+
+check_rules:
+  - id: "can-bus-config-error"
+    description: "CAN bus configuration issues: wrong baud rate, missing termination, incorrect filter/mask setup"
+    severity_default: "high"
+    check: |
+      Verify CAN bus configuration for correctness:
+
+      Bit Timing Calculation:
+      - Time Quantum (TQ) = 1 / (BRP * f_clock), where BRP is the baud rate prescaler
+      - Nominal Bit Time = SYNC_SEG + PROP_SEG + PHASE_SEG1 + PHASE_SEG2
+      - SYNC_SEG is always 1 TQ
+      - Sample point = (SYNC_SEG + PROP_SEG + PHASE_SEG1) / Nominal Bit Time
+      - Sample point should be 75-87.5% for CAN 2.0 (87.5% is recommended)
+      - SJW (Synchronization Jump Width) should be <= min(PHASE_SEG1, PHASE_SEG2)
+      - SJW typically 1-4 TQ; larger SJW tolerates more clock deviation
+
+      CAN FD vs Classic CAN:
+      - CAN FD has separate arbitration and data phase bit timing
+      - Data phase can run at higher speed (up to 8 Mbps)
+      - Data phase sample point typically 70-80%
+      - Transceiver delay compensation (TDC) required for data rates > 2 Mbps
+
+      Bus Load:
+      - Keep bus load below 70% for real-time applications
+      - Calculate: sum of (message_length_bits / period_ms) for all periodic messages
+      - Standard frame overhead: 47 bits + 8*DLC data bits (stuffing adds ~20%)
+      - Extended frame overhead: 67 bits + 8*DLC data bits
+
+      Error Handling:
+      - Bus-off recovery strategy MUST be implemented
+      - Monitor TEC (Transmit Error Counter) and REC (Receive Error Counter)
+      - Bus-off occurs when TEC > 255
+      - Recovery: wait 128 occurrences of 11 consecutive recessive bits
+      - Automatic vs manual bus-off recovery -- document the choice
+
+      Hardware:
+      - 120 Ohm termination resistors at BOTH ends of the bus
+      - Maximum bus length depends on baud rate (1 Mbps: ~25m, 500 kbps: ~100m, 125 kbps: ~500m)
+      - Stub length should be < 0.3m at 1 Mbps
+
+      Do NOT flag:
+      - CAN baud rate of 500 kbps without documentation (standard industrial speed)
+      - Missing termination when code only configures the controller (PCB design concern)
+
+  - id: "canopen-object-dictionary-mismatch"
+    description: "CANopen Object Dictionary inconsistencies: wrong PDO mapping, missing mandatory objects, EDS file mismatch"
+    severity_default: "high"
+    check: |
+      Verify CANopen Object Dictionary and protocol configuration:
+
+      Mandatory Objects (must exist in every CANopen device):
+      - 0x1000: Device type (UNSIGNED32)
+      - 0x1001: Error register (UNSIGNED8)
+      - 0x1018: Identity object (sub 0-4: number of entries, vendor ID, product code, revision, serial)
+
+      Commonly Required Objects:
+      - 0x1005: SYNC COB-ID (if device uses SYNC)
+      - 0x1006: Communication cycle period
+      - 0x1014: EMCY COB-ID
+      - 0x1016: Consumer heartbeat time
+      - 0x1017: Producer heartbeat time
+
+      PDO Mapping:
+      - RPDO communication parameters: 0x1400-0x15FF
+      - RPDO mapping parameters: 0x1600-0x17FF
+      - TPDO communication parameters: 0x1800-0x19FF
+      - TPDO mapping parameters: 0x1A00-0x1BFF
+      - Total mapped bits per PDO must not exceed 64 bits (8 bytes)
+      - PDO COB-IDs must be unique on the network
+
+      NMT State Machine:
+      - Valid transitions: Initialization -> Pre-operational -> Operational
+      - Devices must handle NMT commands: Start (0x01), Stop (0x02), Enter Pre-op (0x80), Reset Node (0x81), Reset Comm (0x82)
+
+      SDO Configuration:
+      - Default SDO timeout: typically 500ms-2000ms
+      - Segmented/block transfer for objects > 4 bytes
+      - SDO abort codes must be handled correctly
+
+      EDS File Consistency:
+      - EDS file entries must match the actual Object Dictionary implementation
+      - Data types, access rights, and default values must be consistent
+      - PDO mapping in EDS must match the runtime configuration
+
+      Do NOT flag:
+      - Heartbeat disabled when network uses NMT polling
+      - Non-standard vendor-specific objects in 0x2000-0x5FFF range
+
+  - id: "ethercat-slave-config-error"
+    description: "EtherCAT slave configuration: ESI mismatch, wrong DC sync mode, mailbox protocol errors"
+    severity_default: "high"
+    check: |
+      Verify EtherCAT slave and master configuration:
+
+      ESI (EtherCAT Slave Information) File:
+      - ESI XML must match the actual slave firmware (vendor ID, product code, revision)
+      - SyncManager configuration must match the process data layout
+      - FMMU mapping must be consistent with the SyncManager configuration
+      - Verify mailbox protocols supported (CoE, FoE, EoE, SoE, VoE)
+
+      Distributed Clocks (DC):
+      - FreeRun: no synchronization, simplest mode, OK for non-time-critical I/O
+      - SM-Synchronous (SM-Sync): synchronized to SyncManager event
+      - DC-Synchronous (DC-Sync0/Sync1): precise synchronization using DC clock
+      - DC jitter must be < 1 us for servo drives, < 10 us for standard I/O
+      - SYNC0 cycle time must match the master's cycle time
+      - System time offset must be calculated and applied during startup
+
+      CoE (CANopen over EtherCAT):
+      - SDO access to slave's Object Dictionary follows CANopen semantics
+      - Complete Access (CA) for reading/writing entire objects
+      - SDO Info service for object dictionary scanning
+
+      Process Data Mapping:
+      - Process data size must match the SyncManager configuration
+      - Bit-level mapping is supported but byte-aligned is preferred
+      - Verify input and output process data sizes match master expectations
+
+      FoE (File Access over EtherCAT):
+      - Used for firmware updates
+      - Verify file transfer completes and slave boots correctly
+      - Bootstrap state required for FoE firmware update
+
+      Startup Sequence:
+      - INIT -> PRE-OP -> SAFE-OP -> OP state transitions
+      - Each transition requires specific configuration steps
+      - AL Status register must be checked after each transition
+      - Error codes in AL Status Code register must be handled
+
+      Do NOT flag:
+      - EtherCAT without DC sync (FreeRun is valid for non-synchronized applications)
+      - Missing FoE support (not all slaves support firmware update)
+
+  - id: "modbus-register-conflict"
+    description: "Modbus register map conflicts: overlapping addresses, wrong function codes, missing endianness handling"
+    severity_default: "medium"
+    check: |
+      Verify Modbus register map and configuration:
+
+      Function Codes:
+      - 01: Read Coils (digital outputs, 1-bit, read)
+      - 02: Read Discrete Inputs (digital inputs, 1-bit, read)
+      - 03: Read Holding Registers (16-bit, read/write)
+      - 04: Read Input Registers (16-bit, read-only)
+      - 05: Write Single Coil
+      - 06: Write Single Register
+      - 15: Write Multiple Coils
+      - 16: Write Multiple Registers
+      - Using the wrong function code for a register type is a protocol violation
+
+      Register Address Ranges:
+      - Coils: 00001-09999 (function codes 01, 05, 15)
+      - Discrete Inputs: 10001-19999 (function code 02)
+      - Input Registers: 30001-39999 (function code 04)
+      - Holding Registers: 40001-49999 (function codes 03, 06, 16)
+      - Note: actual protocol addresses are 0-based (40001 = address 0)
+
+      Byte Order / Endianness:
+      - Modbus standard is big-endian (network byte order)
+      - 32-bit floats require two consecutive registers
+      - Register order for multi-register values varies by device:
+        - Big-endian (AB CD): most significant register first (Modbus standard)
+        - Little-endian (CD AB): least significant register first
+        - Mid-big-endian (BA DC): byte-swapped within each register
+        - Mid-little-endian (DC BA): byte-swapped and register-swapped
+      - ALWAYS check device documentation for byte order of multi-register values
+
+      RTU vs TCP:
+      - RTU: serial, uses slave address (1-247), CRC-16 error checking
+      - TCP: Ethernet, uses Unit ID in MBAP header, TCP provides error checking
+      - ASCII: serial, uses LRC error checking (rarely used in new designs)
+      - RTU inter-frame delay: 3.5 character times (at 9600 baud = ~4ms)
+
+      Timeout and Retry:
+      - Response timeout must be configured (typical: 500ms-3000ms)
+      - Retry count and delay between retries
+      - Exception responses (function code + 0x80) must be handled
+
+      Do NOT flag:
+      - Modbus TCP without encryption (standard practice in isolated OT networks)
+      - Custom function codes in vendor-specific range (65-72, 100-110)
+
+  - id: "fieldbus-timing-violation"
+    description: "Industrial fieldbus cycle time or response time violations that can cause communication loss"
+    severity_default: "critical"
+    check: |
+      Verify timing budgets for all industrial fieldbus protocols:
+
+      EtherCAT Timing:
+      - DC jitter must be < 1 us for servo drives (position control)
+      - DC jitter < 10 us for standard I/O applications
+      - Minimum cycle time depends on number of slaves and process data size
+      - Frame processing time per slave: ~1 us (wire) + slave processing delay
+      - Total cycle time = frame propagation + processing + master computation
+      - Watchdog timeout should be > 3x cycle time
+
+      PROFINET Timing:
+      - RT (Real-Time): cycle time 1-512 ms, jitter < 10% of cycle time
+      - IRT (Isochronous Real-Time): cycle time 250 us - 4 ms, jitter < 1 us
+      - Watchdog factor * cycle time = supervision timeout
+      - Provider and consumer status must be monitored
+
+      CAN Message Latency:
+      - Worst-case latency depends on message priority (lower ID = higher priority)
+      - Worst-case delay for lowest priority message at bus load X%:
+        number_of_higher_priority_messages * max_frame_time + own_frame_time
+      - Maximum frame time at 500 kbps: ~260 us (standard frame, 8 bytes, with stuffing)
+      - Message deadline must account for bus error recovery time
+
+      Modbus Response Time:
+      - Typical response timeout: 500ms for RTU, 1000ms for TCP
+      - Total transaction time: request_tx + slave_processing + response_tx + propagation
+      - At 9600 baud RTU: ~10ms per holding register read
+
+      General Rules:
+      - All communication timeouts must be > 3x the nominal cycle/response time
+      - Watchdog periods must account for worst-case communication delay
+      - Network recovery time after cable disconnect must be specified
+      - Cycle time budget must include ALL tasks: communication + computation + safety
+
+      Do NOT flag:
+      - Conservative timeout values (larger than necessary)
+      - Applications with documented relaxed timing requirements
+
+  - id: "safety-protocol-violation"
+    description: "Functional safety protocol violations: PROFIsafe CRC mismatch, FSoE watchdog timeout, SIL level inadequate"
+    severity_default: "critical"
+    check: |
+      Verify functional safety protocol implementation:
+
+      PROFIsafe:
+      - F-Parameters must be configured correctly on both F-Host and F-Device
+      - F_CRC_Length: CRC size (2 or 4 bytes) must match between both ends
+      - F_WD_Time: watchdog time in milliseconds
+      - F_SIL: required SIL level (SIL 1, 2, or 3)
+      - F_Block_ID: unique block identifier
+      - F_Par_CRC: CRC over all F-Parameters (integrity check)
+      - Data integrity: CRC, consecutive number, virtual consecutive number
+      - Safe state must be defined for communication loss
+
+      FSoE (Fail Safe over EtherCAT):
+      - Connection ID must be unique per safety connection
+      - Watchdog time must be configured (typical: 50-500 ms)
+      - FSoE slave must support the required SIL level
+      - Safety PDO mapping must be correct
+      - CRC calculation covers safety data + connection ID + sequence number
+      - Process data must include: safety data + safety control/status word
+
+      CIP Safety (EtherNet/IP Safety):
+      - Safety connection parameters: safety network number, SCID, TUNID
+      - Configuration signature (SCID) must match between producer and consumer
+      - Target Unique Node ID (TUNID) must be unique
+      - Safety connection type: Type 1 (unicast) or Type 2 (multicast)
+      - RPI (Requested Packet Interval) affects safety response time
+
+      SIL Rating Requirements:
+      - SIL 1: safe failure fraction >= 60% (Type A), >= 90% (Type B), PFH < 1e-6
+      - SIL 2: safe failure fraction >= 90% (Type A), >= 99% (Type B), PFH < 1e-7
+      - SIL 3: safe failure fraction >= 99% (Type A), >= 99.9% (Type B), PFH < 1e-8
+      - The communication protocol SIL must be >= the application's required SIL
+      - Single-channel vs dual-channel architecture affects achievable SIL
+
+      Safety Data Integrity:
+      - CRC must be validated on every received safety frame
+      - Sequence number must be checked for consecutive numbering
+      - Codename/connection ID prevents cross-connection of safety data
+      - Timeout monitoring: if no valid safety frame within watchdog time -> safe state
+      - Data consistency: safety-relevant data must be atomically read/written
+
+      Do NOT flag:
+      - SIL 1 applications using non-safety protocols with application-level checks
+      - Test/commissioning mode with safety bypassed (if documented)
+
+severity_guidance:
+  critical: "Safety protocol violation or timing issue that causes communication loss or unsafe state"
+  high: "Protocol misconfiguration that causes intermittent failures or data corruption"
+  medium: "Register conflict, suboptimal configuration, or missing error handling"
+  low: "Non-standard configuration that works but is fragile"
+  info: "Protocol configuration observation or optimization opportunity"
+
+system_prompt: |
+  You are an Industrial Protocol Expert. You evaluate configurations and implementations
+  of industrial communication protocols used in automation, robotics, and embedded systems.
+
+  ## Protocols You Cover
+
+  | Protocol | Layer | Typical Use |
+  |----------|-------|-------------|
+  | CAN / CAN FD | Fieldbus | Automotive, industrial, robotics |
+  | CANopen | Application over CAN | Motion control, I/O modules, sensors |
+  | EtherCAT | Industrial Ethernet | High-speed servo drives, I/O, sensors |
+  | PROFINET | Industrial Ethernet | Factory automation (Siemens ecosystem) |
+  | Modbus RTU/TCP | Serial/Ethernet | HVAC, energy, legacy industrial |
+  | OPC UA | Application | SCADA, MES, IIoT, data exchange |
+  | EtherNet/IP | Industrial Ethernet | Rockwell/Allen-Bradley ecosystem |
+  | PROFIBUS DP/PA | Fieldbus | Process automation, older installations |
+  | IO-Link | Point-to-point | Smart sensors, actuators |
+  | CC-Link IE | Industrial Ethernet | Mitsubishi ecosystem |
+  | BACnet | Building automation | HVAC control systems |
+
+  ## Verification Framework
+
+  1. **Bus/Network Configuration**
+     - CAN: baud rate, sample point (75-87.5%), bus termination (120 Ohm)
+     - EtherCAT: DC synchronization mode, cycle time, topology
+     - PROFINET: RT class (RT, IRT), update time, AR/CR configuration
+     - Modbus: slave addresses (1-247), timeout, retry policy
+
+  2. **Protocol Stack Correctness**
+     - CANopen: NMT state machine transitions, mandatory OD entries
+     - EtherCAT: ESI/ENI consistency, mailbox protocol (CoE/FoE/EoE)
+     - PROFINET: GSDML validation, alarm handling
+     - OPC UA: security policy, session management, subscription intervals
+
+  3. **Timing Budget**
+     - Calculate total cycle time budget
+     - Verify all slaves/nodes fit within cycle
+     - Check jitter requirements (EtherCAT DC < 1 us, PROFINET IRT < 1 us)
+     - Verify watchdog timeouts > 3x cycle time
+
+  4. **Error Handling**
+     - CAN: bus-off recovery strategy, error counters
+     - EtherCAT: AL status error handling, slave reconnection
+     - PROFINET: diagnostic alarms, substitute values
+     - Modbus: exception response handling, timeout/retry
+
+  5. **Safety Integration**
+     - PROFIsafe: F-Host/F-Device parameters, CRC validation
+     - FSoE (EtherCAT Safety): watchdog time, connection ID
+     - CIP Safety: safety connection parameters, ownership
+
+  ## Common False Positives (DO NOT flag)
+
+  | Pattern | Why it's OK |
+  |---------|-------------|
+  | CAN baud rate 500k without documentation | Standard industrial CAN speed |
+  | Modbus TCP without encryption | Standard practice in isolated OT networks |
+  | EtherCAT without DC sync | FreeRun mode is valid for non-synchronized applications |
+  | CANopen heartbeat disabled | Some networks use only NMT polling |
+  | OPC UA security = None | Valid for development/testing |
+
+  ## Critical Anti-Patterns (ALWAYS flag)
+
+  | Pattern | Risk |
+  |---------|------|
+  | CAN without bus-off recovery | Bus permanently stops on error burst |
+  | EtherCAT DC jitter > 10 us on servo drives | Position overshoot, mechanical damage |
+  | Modbus without timeout handling | Thread/task hangs indefinitely |
+  | PROFIsafe CRC not validated | Safety function compromised |
+  | CANopen without EMCY handling | Critical errors silently ignored |
+
+  ## Review Guidelines
+
+  When reviewing industrial protocol code:
+
+  1. **Identify the protocol stack** being used (vendor library, open source, custom)
+  2. **Check initialization sequence** against the protocol specification
+  3. **Verify all configuration parameters** (addresses, timing, modes)
+  4. **Inspect error handling paths** for completeness
+  5. **Validate safety-relevant code** against the required SIL level
+  6. **Check interoperability** when multiple protocols are bridged (e.g., CANopen to EtherCAT via CoE)
+
+  You are a read-only reviewer. You MUST NOT modify any code. Report findings with
+  clear severity ratings, protocol references, and recommended fixes.

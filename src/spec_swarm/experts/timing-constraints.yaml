@@ -1,0 +1,200 @@
+name: "Timing Constraints Expert"
+version: "1.0"
+description: "Evaluates timing budgets, watchdog windows, real-time deadlines, interrupt latency, jitter analysis, and clock accuracy requirements"
+domain: "embedded"
+relevance_keywords:
+  - "timing"
+  - "watchdog"
+  - "deadline"
+  - "latency"
+  - "jitter"
+  - "clock"
+  - "frequency"
+  - "rtos"
+  - "real-time"
+  - "timer"
+  - "rtc"
+  - "period"
+
+check_rules:
+  - id: "deadline-violation"
+    description: "Task or ISR execution time exceeds its real-time deadline"
+    severity_default: "critical"
+    check: |
+      Verify real-time deadline compliance:
+
+      Periodic tasks:
+      - Task WCET (Worst-Case Execution Time) must be less than the task period
+      - CPU utilization: sum of (WCET_i / Period_i) for all tasks must be < 1.0
+      - Rate Monotonic Analysis: for n tasks, U <= n * (2^(1/n) - 1)
+        - 1 task: 100%, 2 tasks: 82.8%, 3 tasks: 78.0%, many tasks: ~69.3%
+      - Priority inversion can cause deadline violations -- use priority inheritance mutexes
+
+      Interrupt latency:
+      - Cortex-M: 12-16 cycles interrupt entry latency (without tail-chaining)
+      - Plus ISR code execution time
+      - Nested interrupts: higher-priority ISR preempts lower-priority
+      - FreeRTOS: ISR latency includes time to highest-priority task context switch
+
+      Common deadline-sensitive operations:
+      - Motor control current sampling: must occur at specific PWM phase (center of ON time)
+      - ADC triggered by timer: conversion must complete before next trigger
+      - Communication protocol timing: I2C clock stretching timeout, CAN bit timing
+      - USB SOF (Start of Frame): 1 ms for Full Speed, 125 us for High Speed
+      - Audio: sample buffer underrun causes audible glitch
+
+      RTOS considerations:
+      - FreeRTOS: configTICK_RATE_HZ affects timing granularity (typically 1 kHz = 1 ms)
+      - Zephyr: CONFIG_SYS_CLOCK_TICKS_PER_SEC, tickless mode for better resolution
+      - ThreadX: TX_TIMER_TICKS_PER_SECOND
+      - Task preemption and context switch overhead: typically 1-10 us on Cortex-M
+
+      Do NOT flag:
+      - Non-real-time tasks with no specific deadline requirement
+      - Tasks with adequate margin between WCET and deadline
+      - Soft real-time systems where occasional deadline misses are acceptable
+
+  - id: "watchdog-timeout-risk"
+    description: "Watchdog timeout period is too short for normal operation or too long for fault detection"
+    severity_default: "high"
+    check: |
+      Verify watchdog configuration:
+
+      Independent Watchdog (IWDG):
+      - STM32: clocked from LSI (~32-40 kHz, varies with temperature)
+      - Timeout = (Prescaler * Reload) / LSI_frequency
+      - Cannot be disabled once started (except by reset)
+      - Must be fed before timeout -- verify all code paths reach the feed point
+
+      Window Watchdog (WWDG):
+      - Must be fed within a window (not too early, not too late)
+      - Useful for detecting timing violations, not just hangs
+      - STM32: clocked from APB1 clock
+
+      Common issues:
+      - Watchdog timeout shorter than longest task execution time
+      - Feeding the watchdog in a timer ISR -- masks main loop hangs
+      - Watchdog not initialized at all -- no hardware fault recovery
+      - Sleep mode: IWDG continues running, must wake to feed before timeout
+      - Bootloader must either feed WDG or timeout must cover update time
+
+      Best practices:
+      - Feed watchdog only from the main control loop, not from ISR
+      - Use window watchdog to detect tasks running too fast or too slow
+      - Multi-task systems: each task checks in, watchdog fed only when all have checked in
+      - Safety-critical: use both IWDG and WWDG for diverse redundancy
+
+      Do NOT flag:
+      - Watchdog configured with adequate margin for worst-case execution
+      - Systems in development/debug mode with watchdog intentionally disabled
+      - Applications where watchdog is not required (non-safety, non-deployed)
+
+  - id: "jitter-budget-exceeded"
+    description: "Timing jitter exceeds the acceptable budget for the application"
+    severity_default: "high"
+    check: |
+      Analyze timing jitter sources and budget:
+
+      Sources of jitter in embedded systems:
+      - Interrupt latency variation (other ISRs blocking, priority inversion)
+      - RTOS tick granularity (1 ms typical -- can cause up to 1 ms jitter)
+      - Flash wait states (code execution from flash has variable latency)
+      - Cache misses (Cortex-M7 with I/D cache, unpredictable miss pattern)
+      - DMA bus contention (DMA and CPU competing for memory bus)
+      - Clock source instability (RC oscillator drift, crystal tolerance)
+
+      Jitter-sensitive applications:
+      - PWM for motor control: jitter causes torque ripple and audible noise
+      - Audio sampling/playback: jitter causes distortion (SNR degradation)
+      - Communication protocols: UART bit timing, CAN bit sampling
+      - Sensor sampling: non-uniform sampling degrades frequency-domain analysis
+      - Servo control loops: jitter reduces effective control bandwidth
+
+      Mitigation strategies:
+      - Use hardware timers for precise timing (not software delays)
+      - Execute critical code from ITCM/CCM RAM (no flash wait states)
+      - Trigger ADC from timer hardware, not software
+      - Use DMA for data transfer to avoid CPU timing dependency
+      - FreeRTOS: configUSE_TICKLESS_IDLE can improve jitter in some cases
+
+      Do NOT flag:
+      - Applications without strict jitter requirements
+      - Systems using hardware-triggered events (timer -> ADC -> DMA chain)
+      - Jitter within the protocol's tolerance (UART: < 2% of bit time)
+
+  - id: "clock-drift-risk"
+    description: "Clock source accuracy insufficient for the application, causing timing drift over time"
+    severity_default: "medium"
+    check: |
+      Verify clock source accuracy:
+
+      Internal RC oscillators:
+      - STM32 HSI: +/- 1% at 25C, +/- 4% over full temperature range (-40 to +85C)
+      - ESP32 internal 8 MHz: +/- 5% typical
+      - MSP430 DCO: varies widely, calibration required
+
+      External crystals:
+      - HSE crystal: typically +/- 10-50 ppm
+      - LSE (32.768 kHz): typically +/- 20 ppm for RTC accuracy
+
+      Accuracy requirements by application:
+      - UART: < 3% clock error for reliable communication at any baud rate
+      - USB: +/- 0.25% (2500 ppm) -- typically requires crystal
+      - CAN: +/- 0.5% for reliable bus communication
+      - RTC: +/- 20 ppm = ~1 second/day drift
+      - Ethernet: 25 MHz crystal, +/- 50 ppm
+
+      Common issues:
+      - Using HSI for USB (insufficient accuracy, will cause enumeration failure)
+      - Using HSI for UART at high baud rates over temperature
+      - RTC drift accumulates: 100 ppm = ~8.6 seconds/day
+      - Crystal load capacitance mismatch affects frequency accuracy
+      - Temperature-compensated oscillators (TCXO) needed for GPS, cellular
+
+      Do NOT flag:
+      - Systems using appropriate crystal oscillators for the application
+      - Applications where periodic time synchronization corrects for drift
+      - Internal RC oscillators used where accuracy is not critical
+
+severity_guidance:
+  critical: "Timing violation will cause hardware damage, communication failure, or safety hazard"
+  high: "Timing violation causes functional failure under normal operating conditions"
+  medium: "Timing issue causes degraded performance or occasional errors"
+  low: "Timing could be optimized for better performance"
+  info: "Timing observation, no issue"
+
+system_prompt: |
+  You are a Timing Constraints Expert specializing in real-time embedded systems.
+  You analyze timing budgets, watchdog configurations, interrupt latency, task scheduling,
+  jitter analysis, and clock source accuracy for embedded applications.
+
+  ## Core Competencies
+
+  - **Real-time analysis**: WCET estimation, rate monotonic analysis, deadline monotonic,
+    earliest deadline first, CPU utilization analysis, priority inversion detection
+  - **Watchdog timers**: IWDG, WWDG, external watchdog ICs, window mode, timeout calculation,
+    multi-task watchdog patterns, safety-critical watchdog architectures
+  - **Interrupt timing**: NVIC priority, tail-chaining, late arrival, lazy stacking,
+    interrupt-to-task latency, ISR execution time measurement
+  - **Clock systems**: HSI/HSE/LSI/LSE, PLL configuration, clock security system (CSS),
+    crystal specifications, clock trimming, frequency measurement
+  - **RTOS timing**: tick rate, tickless idle, timer services, software timers,
+    context switch time, scheduler overhead, priority inversion with priority inheritance
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Calculate the timing budget** -- available time vs required time for each deadline
+  2. **Identify jitter sources** -- interrupt nesting, cache, flash wait states, bus contention
+  3. **Check clock accuracy** -- source specification vs application requirement
+  4. **Verify watchdog configuration** -- timeout vs worst-case execution path
+  5. **Consider temperature effects** -- RC oscillator drift, crystal frequency shift
+
+  ## Measurement and Verification Tools
+
+  - GPIO toggle + oscilloscope for ISR timing measurement
+  - DWT cycle counter (DWT_CYCCNT) for precise code timing on Cortex-M3/M4/M7
+  - ITM/SWO trace for non-intrusive timing analysis
+  - FreeRTOS trace hooks (traceTASK_SWITCHED_IN/OUT) for task timing
+  - Logic analyzer for protocol timing verification
+  - Segger SystemView for RTOS timing visualization

@@ -1,0 +1,175 @@
+name: "Sensor Interface Expert"
+version: "1.0"
+description: "Evaluates sensor configurations: ADC resolution, sampling rates, calibration requirements, signal conditioning, and filtering"
+domain: "embedded"
+relevance_keywords:
+  - "sensor"
+  - "adc"
+  - "dac"
+  - "temperature"
+  - "pressure"
+  - "accelerometer"
+  - "gyroscope"
+  - "magnetometer"
+  - "current"
+  - "voltage"
+  - "humidity"
+  - "light"
+  - "proximity"
+
+check_rules:
+  - id: "adc-resolution-insufficient"
+    description: "ADC resolution is too low to measure the required signal range with acceptable accuracy"
+    severity_default: "high"
+    check: |
+      Verify ADC resolution meets the measurement requirements:
+
+      Resolution analysis:
+      - 12-bit ADC: 4096 steps, LSB = VREF / 4096 (e.g., 0.806 mV at 3.3V reference)
+      - 10-bit ADC: 1024 steps, LSB = VREF / 1024 (e.g., 3.22 mV at 3.3V reference)
+      - 16-bit ADC: 65536 steps, LSB = VREF / 65536 (e.g., 50.3 uV at 3.3V reference)
+
+      Common requirements:
+      - Temperature measurement (NTC/PTC): 12-bit usually sufficient for 0.1 C resolution
+      - Current sensing (shunt): signal amplitude vs ADC range -- may need amplification
+      - Pressure sensors (bridge): output is typically 10-40 mV/V -- needs instrumentation amp
+      - Battery voltage monitoring: voltage divider ratio must fit ADC input range
+
+      Effective Number of Bits (ENOB):
+      - Actual resolution is less than nominal due to noise and nonlinearity
+      - STM32F4 12-bit ADC: ENOB ~10.5 bits typical
+      - Check SNR, THD, and INL from the MCU datasheet's ADC characteristics table
+
+      Do NOT flag:
+      - ADC resolution that provides adequate measurement resolution for the application
+      - External high-resolution ADCs (ADS1115, MCP3561) when the internal ADC is insufficient
+
+  - id: "sampling-rate-violation"
+    description: "ADC sampling rate is insufficient for the signal bandwidth (Nyquist violation) or exceeds ADC capability"
+    severity_default: "high"
+    check: |
+      Verify sampling rate against signal requirements (Nyquist theorem):
+
+      Minimum sampling rate = 2x maximum signal frequency (Nyquist minimum)
+      Recommended: 5-10x for practical anti-aliasing filter design
+
+      Common sensor sampling rates:
+      - Temperature: 1-10 Hz (slow-changing signal)
+      - Vibration/accelerometer: 1-10 kHz (mechanical resonance)
+      - Audio: 8-48 kHz (8 kHz voice, 44.1 kHz/48 kHz music)
+      - Motor current sensing: 10-100 kHz (PWM frequency dependent)
+      - Power line monitoring: >= 2.56 kHz for up to 50th harmonic of 50/60 Hz
+
+      ADC conversion time:
+      - STM32F4: 3-480 ADC clock cycles per conversion + 12 cycles for 12-bit
+      - ESP32: 12-bit SAR ADC, ~80 kSPS per channel
+      - External ADCs: check SPI/I2C throughput limits the effective sample rate
+
+      Anti-aliasing filter:
+      - Hardware anti-aliasing filter required before ADC input
+      - Filter cutoff should be at or below Nyquist frequency
+      - 1st-order RC filter: -20 dB/decade -- usually insufficient
+      - Active 2nd/4th-order filters recommended for demanding applications
+
+      Do NOT flag:
+      - Sampling rates well above Nyquist with adequate anti-aliasing
+      - Applications where oversampling and digital filtering are used intentionally
+
+  - id: "calibration-missing"
+    description: "Sensor requires calibration but no calibration procedure or compensation is implemented"
+    severity_default: "medium"
+    check: |
+      Check for missing calibration or compensation:
+
+      Internal ADC:
+      - STM32: factory calibration values stored in system memory (VREFINT_CAL, TS_CAL1, TS_CAL2)
+      - Internal temperature sensor requires two-point calibration for accuracy
+      - VREFINT measurement for supply voltage compensation
+
+      External sensors:
+      - MEMS accelerometers/gyroscopes: offset and sensitivity calibration
+      - Pressure sensors: temperature compensation coefficients (MS5611: PROM data)
+      - Temperature sensors: check if digital output is pre-calibrated (e.g., BME280)
+      - Current sensors: zero-current offset calibration, gain calibration
+
+      Common calibration approaches:
+      - Factory calibration: stored in sensor EEPROM/OTP, read at initialization
+      - Runtime calibration: zero-point at startup, periodic re-calibration
+      - Temperature compensation: apply correction based on measured temperature
+      - Multi-point calibration: linearity correction across measurement range
+
+      Do NOT flag:
+      - Sensors with digital output that are factory-calibrated (e.g., SHT31, BME280)
+      - Applications where absolute accuracy is not required
+      - Systems where calibration is handled by a separate calibration routine
+
+  - id: "filter-cutoff-mismatch"
+    description: "Digital or analog filter cutoff frequency does not match the signal bandwidth"
+    severity_default: "medium"
+    check: |
+      Verify filter configuration matches signal requirements:
+
+      Digital filters:
+      - Moving average: effective cutoff depends on window size and sample rate
+      - IIR filters: check coefficient calculation for the desired cutoff frequency
+      - FIR filters: verify tap count provides adequate stopband attenuation
+      - Complementary filter (sensor fusion): time constant must match sensor dynamics
+
+      Analog filters:
+      - Anti-aliasing: cutoff at or below Nyquist frequency
+      - RC filter: f_cutoff = 1 / (2 * pi * R * C)
+      - Active filters: verify op-amp GBW is sufficient for the filter order and frequency
+
+      Common issues:
+      - Filter cutoff too low: removes useful signal content, slows response
+      - Filter cutoff too high: passes noise, aliasing may occur
+      - Integer overflow in fixed-point filter implementations
+      - Filter group delay affects control loop timing
+
+      Do NOT flag:
+      - Filter configurations that match the documented requirements
+      - Applications where filtering is handled by the sensor's built-in DSP
+
+severity_guidance:
+  critical: "Measurement will produce completely wrong results, safety-critical measurement error"
+  high: "Measurement accuracy significantly degraded, may cause system malfunction"
+  medium: "Measurement quality suboptimal, accuracy could be improved"
+  low: "Minor measurement optimization opportunity"
+  info: "Sensor configuration observation, no issue"
+
+system_prompt: |
+  You are a Sensor Interface Expert specializing in embedded sensor integration.
+  You analyze ADC configuration, signal conditioning, sampling strategies, calibration
+  requirements, and digital filtering for embedded systems.
+
+  ## Core Competencies
+
+  - **ADC/DAC**: SAR, sigma-delta, pipeline architectures, resolution vs speed tradeoffs,
+    reference voltage sources, internal vs external ADCs, DMA-based acquisition
+  - **Signal conditioning**: instrumentation amplifiers, anti-aliasing filters,
+    voltage dividers, current sense amplifiers, wheatstone bridges
+  - **Sensor types**: temperature (NTC, RTD, thermocouple, digital), pressure (MEMS, piezo),
+    IMU (accelerometer, gyroscope, magnetometer), current (Hall, shunt, Rogowski),
+    optical (photodiode, phototransistor), environmental (humidity, gas, particulate)
+  - **Calibration**: factory vs field calibration, offset/gain/linearity correction,
+    temperature compensation, aging compensation
+  - **Digital filtering**: moving average, IIR (Butterworth, Chebyshev), FIR,
+    complementary filter, Kalman filter basics, median filter for outlier rejection
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Check the signal chain** -- sensor output through conditioning to ADC input
+  2. **Verify voltage levels** -- sensor output range vs ADC input range
+  3. **Calculate resolution** -- LSB size vs required measurement resolution
+  4. **Check sampling rate** -- Nyquist theorem, anti-aliasing filter cutoff
+  5. **Verify calibration** -- factory data used, temperature compensation applied
+
+  ## Common Sensor ICs and Their Requirements
+
+  - **BME280/BMP280**: I2C/SPI, factory-calibrated, read compensation parameters from NVM
+  - **MPU6050/ICM20948**: I2C, requires gyroscope zero-rate calibration at startup
+  - **ADS1115/ADS1256**: External ADCs for precision measurement, PGA configuration
+  - **MAX31855/MAX31856**: Thermocouple interfaces, cold junction compensation
+  - **INA219/INA226**: Current/power monitors, shunt resistor sizing critical
+  - **HX711**: 24-bit ADC for load cells, specific timing requirements for data ready

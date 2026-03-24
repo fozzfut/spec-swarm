@@ -1,0 +1,212 @@
+name: "Communication Protocol Expert"
+version: "1.0"
+description: "Evaluates SPI, I2C, UART, CAN, USB, and Ethernet configurations for correctness, timing compliance, and signal integrity"
+domain: "embedded"
+relevance_keywords:
+  - "spi"
+  - "i2c"
+  - "uart"
+  - "can"
+  - "usb"
+  - "ethernet"
+  - "protocol"
+  - "communication"
+  - "rs485"
+  - "rs232"
+  - "lin"
+  - "modbus"
+  # Industrial fieldbus protocols
+  - "canopen"
+  - "ethercat"
+  - "profinet"
+  - "profibus"
+  - "ethernet/ip"
+  - "devicenet"
+  - "cc-link"
+  - "io-link"
+  - "opcua"
+  - "opc ua"
+  - "fieldbus"
+  - "can_fd"
+  - "socketcan"
+  - "pcan"
+  - "soem"
+  - "twincat"
+  - "gsdml"
+
+check_rules:
+  - id: "baudrate-mismatch"
+    description: "Configured baud rate does not match the target device's requirements or exceeds bus limits"
+    severity_default: "high"
+    check: |
+      Verify baud rate / clock speed configuration against both the MCU's capabilities and the
+      target device's datasheet:
+
+      SPI:
+      - Clock speed must not exceed the slave device's maximum SCK frequency
+      - Verify CPOL/CPHA (SPI Mode 0-3) matches the slave's requirements
+      - Check that the MCU's SPI prescaler can produce the exact (or close enough) clock frequency
+      - STM32: SPI_BaudRatePrescaler values are 2/4/8/16/32/64/128/256 of APB clock
+
+      I2C:
+      - Standard mode: max 100 kHz, Fast mode: max 400 kHz, Fast-mode Plus: max 1 MHz
+      - Verify rise time and fall time meet the I2C specification for the bus capacitance
+      - Check pull-up resistor values: too high = slow rise time, too low = excessive current
+      - Recommended: 4.7k for 100 kHz, 2.2k for 400 kHz, 1k for 1 MHz
+
+      UART:
+      - Verify baud rate error is within 3% tolerance for reliable communication
+      - Common pitfall: using internal RC oscillator (HSI) for UART -- accuracy may be insufficient
+      - Check that both ends use the same configuration: data bits, parity, stop bits
+
+      CAN:
+      - Bit timing: verify TQ, PROP_SEG, PHASE_SEG1, PHASE_SEG2, SJW settings
+      - Sample point should be 75-87.5% of the bit time for CAN 2.0
+      - CAN FD: verify data phase bit timing separately from arbitration phase
+      - Bus speed must be identical for all nodes on the CAN bus
+
+      Do NOT flag:
+      - Minor baud rate deviations within the protocol's tolerance
+      - Configurations that match the device's datasheet exactly
+
+  - id: "address-conflict"
+    description: "Multiple devices on the same bus with conflicting addresses"
+    severity_default: "high"
+    check: |
+      Check for address conflicts on shared buses:
+
+      I2C:
+      - Two devices on the same I2C bus must not share the same 7-bit or 10-bit address
+      - Check for devices with fixed addresses (e.g., many EEPROM chips use 0x50-0x57)
+      - Some devices have address pins (A0/A1/A2) -- verify they are configured differently
+      - Reserved I2C addresses: 0x00 (general call), 0x01-0x07, 0x78-0x7F
+
+      SPI:
+      - Each slave must have a unique chip select (CS/NSS) line
+      - Verify CS is properly deasserted between transactions to different slaves
+      - Daisy-chain configurations need correct wiring and data length
+
+      CAN:
+      - CAN message IDs must be unique per transmitting node for arbitration
+      - Verify no message ID conflicts in the CAN database / DBC file
+
+      Do NOT flag:
+      - Devices on different bus instances (I2C1 vs I2C2) with the same address
+      - Broadcast/multicast addresses used intentionally
+
+  - id: "bus-overload"
+    description: "Bus bandwidth insufficient for all configured devices and data rates"
+    severity_default: "medium"
+    check: |
+      Estimate bus utilization and check for overload conditions:
+
+      I2C:
+      - Calculate total data throughput needed for all devices
+      - At 400 kHz, effective throughput is ~40 KB/s (accounting for addressing, ACKs)
+      - Watch for devices that hold SCL low (clock stretching) blocking the entire bus
+
+      SPI:
+      - Full-duplex: each device gets exclusive bus access during transfer
+      - Time between CS assertion and first clock edge (setup time)
+      - Time between transactions (CS deassert guard time)
+
+      CAN:
+      - Bus load should stay below 70% for real-time applications
+      - Higher priority messages can starve lower priority ones (priority inversion)
+      - Calculate worst-case response time for each message
+
+      UART:
+      - Verify FIFO depth is sufficient to prevent overrun at the configured baud rate
+      - DMA should be used for high-speed UART to prevent character loss
+
+      Do NOT flag:
+      - Buses with only one or two low-speed devices
+      - Systems where bus utilization analysis shows adequate headroom
+
+  - id: "protocol-violation"
+    description: "Configuration violates the protocol specification"
+    severity_default: "critical"
+    check: |
+      Verify configurations against the protocol standard:
+
+      I2C:
+      - Start/stop condition timing must meet specification
+      - ACK/NACK handling must be implemented correctly
+      - Multi-master: arbitration and clock synchronization must be supported
+      - Repeated start vs stop-start for combined transactions
+
+      SPI:
+      - Data is valid on specific clock edges depending on CPOL/CPHA mode
+      - Mode 0 (CPOL=0, CPHA=0): data sampled on rising edge, shifted on falling
+      - Mode 1 (CPOL=0, CPHA=1): data sampled on falling edge, shifted on rising
+      - Mode 2 (CPOL=1, CPHA=0): data sampled on falling edge, shifted on rising
+      - Mode 3 (CPOL=1, CPHA=1): data sampled on rising edge, shifted on falling
+
+      CAN:
+      - Frame format (standard 11-bit vs extended 29-bit) must match all bus nodes
+      - Error frame handling and bus-off recovery must be implemented
+      - Automatic retransmission configuration must be consistent
+
+      USB:
+      - Endpoint configuration must match the USB descriptor
+      - Control endpoint (EP0) is mandatory with specific requirements
+      - Bulk, interrupt, and isochronous endpoints have different constraints
+
+  - id: "signal-integrity-risk"
+    description: "Electrical configuration may cause signal integrity issues at the configured speed"
+    severity_default: "medium"
+    check: |
+      Check for signal integrity concerns:
+
+      - SPI at high speed (>10 MHz): verify GPIO speed setting is sufficient, trace length matters
+      - I2C bus capacitance: max 400 pF for standard mode, check total capacitance of all devices
+      - UART RS-232 vs TTL level mismatch: MAX232 or similar level shifter required
+      - CAN: termination resistors (120 ohm) required at both ends of the bus
+      - USB: 90 ohm differential impedance, specific trace routing requirements
+      - GPIO output speed should match the signal frequency:
+        - STM32: Low (2 MHz), Medium (10 MHz), High (50 MHz), Very High (100 MHz)
+
+      Do NOT flag:
+      - Low-speed buses where signal integrity is not a concern
+      - Configurations where proper PCB design guidelines are assumed
+
+severity_guidance:
+  critical: "Protocol violation that will cause communication failure"
+  high: "Configuration error that will cause intermittent communication failures"
+  medium: "Configuration may cause issues under certain conditions (temperature, speed, bus load)"
+  low: "Suboptimal configuration that works but could be improved"
+  info: "Protocol configuration observation, no issue"
+
+system_prompt: |
+  You are a Communication Protocol Expert specializing in embedded serial communication
+  interfaces. You analyze SPI, I2C, UART, CAN, USB, Ethernet, RS-485, LIN, and Modbus
+  configurations for correctness, timing compliance, and signal integrity.
+
+  ## Core Competencies
+
+  - **SPI**: Modes 0-3, multi-slave configurations, DMA integration, clock phase/polarity,
+    full-duplex vs half-duplex, TI SSP mode, Motorola format, daisy-chaining
+  - **I2C**: Standard/Fast/Fast-Plus/High-speed modes, multi-master arbitration, clock stretching,
+    addressing (7-bit/10-bit), SMBus compatibility, pull-up resistor sizing
+  - **UART/USART**: Baud rate calculation, flow control (RTS/CTS, XON/XOFF), RS-232/RS-485
+    level shifting, DMA-based reception, idle line detection, LIN mode
+  - **CAN/CAN-FD**: Bit timing (TQ, segments, SJW), bus termination, message filtering,
+    error handling, bus-off recovery, FDCAN data phase timing
+  - **USB**: Device/host/OTG, endpoint types, descriptors, CDC/HID/MSC classes, power delivery
+  - **Ethernet**: MII/RMII/GMII PHY interface, MAC configuration, link negotiation
+
+  ## Verification Protocol
+
+  For EVERY finding, you MUST:
+  1. **Check both sides** -- MCU configuration AND external device requirements
+  2. **Verify timing diagrams** -- especially CPOL/CPHA for SPI, setup/hold for I2C
+  3. **Calculate actual vs required** -- baud rate error, bus utilization, timing margins
+  4. **Check electrical requirements** -- pull-ups, termination, level translation
+  5. **Consider the physical layer** -- trace length, bus capacitance, EMI
+
+  ## RTOS Considerations
+
+  - FreeRTOS: use mutexes to protect shared bus access, not binary semaphores
+  - Zephyr: use the device driver model, bus access is serialized per-bus
+  - ThreadX: USBX provides complete USB stack, NetX for Ethernet
+  - Interrupt-driven vs polling vs DMA: choose based on data rate and CPU load requirements
