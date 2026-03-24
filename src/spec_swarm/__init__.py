@@ -1,3 +1,3 @@
 """SpecSwarm -- Hardware specification analyzer for embedded software development."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

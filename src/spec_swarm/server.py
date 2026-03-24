@@ -840,6 +840,103 @@ def create_mcp_server():
             "posted_to_swarm_kb": kb_posted,
         }, indent=2)
 
+    # ── Report Generation ────────────────────────────────────────────
+
+    @mcp.tool(
+        name="spec_generate_report",
+        description=(
+            "Generate a Hardware Specification Report from the current session. "
+            "This report serves as input for ArchSwarm architecture analysis. "
+            "Saved to swarm-kb and returned as markdown."
+        ),
+    )
+    def _spec_generate_report(
+        session_id: str,
+        output_path: str = "",
+        ctx: Optional[Context] = None,
+    ) -> str:
+        from pathlib import Path
+        from .report_generator import generate_report
+
+        app = _get_app(ctx)
+        session = app.store.get_session(session_id)
+        specs = session.specs
+
+        if not specs:
+            return json.dumps({
+                "error": "No specs in session. Ingest or add specs first.",
+            })
+
+        # Derive project name from session project_path
+        project_name = ""
+        if session.project_path:
+            project_name = Path(session.project_path).name
+        if not project_name:
+            project_name = session_id
+
+        report_md = generate_report(specs, session_id, project_name=project_name)
+
+        # Save report to session directory
+        sess_dir = app.store._session_dir(session_id)
+        report_file = sess_dir / "spec_report.md"
+        report_file.write_text(report_md, encoding="utf-8")
+
+        # Optionally write to output_path
+        if output_path:
+            try:
+                out = Path(output_path)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(report_md, encoding="utf-8")
+            except OSError:
+                pass
+
+        # Post to swarm-kb as a finding with category="spec-report"
+        kb_posted = app.store.post_to_swarm_kb(
+            session_id,
+            tool="spec",
+            category="spec-report",
+            data={
+                "session_id": session_id,
+                "project_name": project_name,
+                "report": report_md,
+                "exported_at": now_iso(),
+            },
+        )
+
+        # Store as finding
+        app.store.add_finding(session_id, {
+            "type": "spec_report",
+            "report_path": str(report_file),
+            "kb_posted": kb_posted,
+        })
+
+        # Build summary stats
+        total_registers = sum(len(s.registers) for s in specs)
+        total_pins = sum(len(s.pins) for s in specs)
+        total_protocols = sum(len(s.protocols) for s in specs)
+        total_timing = sum(len(s.timing) for s in specs)
+        total_power = sum(len(s.power) for s in specs)
+        total_memory = sum(len(s.memory_map) for s in specs)
+
+        from .report_generator import extract_arch_constraints
+        arch_constraints = extract_arch_constraints(specs)
+
+        return json.dumps({
+            "report": report_md,
+            "report_path": str(report_file),
+            "posted_to_swarm_kb": kb_posted,
+            "stats": {
+                "components": len(specs),
+                "registers": total_registers,
+                "pins": total_pins,
+                "protocols": total_protocols,
+                "timing_constraints": total_timing,
+                "power_specs": total_power,
+                "memory_regions": total_memory,
+                "arch_constraints_derived": len(arch_constraints),
+            },
+        }, indent=2)
+
     # ── Summary ──────────────────────────────────────────────────────
 
     @mcp.tool(
