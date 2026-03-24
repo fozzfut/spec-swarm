@@ -208,6 +208,11 @@ def extract_pins(text: str) -> list[dict]:
         })
 
     # Pattern 3: ESP32-style pin notation (GPIO0, GPIO2, IO0, etc.)
+    # Exclude GPIO state keywords that describe pin levels, not functions
+    _GPIO_STATE_KEYWORDS = {
+        "HIGH", "LOW", "ON", "OFF", "SET", "CLEAR", "RESET",
+        "PULSE", "TOGGLE", "TRUE", "FALSE", "ACTIVE", "INACTIVE",
+    }
     pat3 = re.compile(
         r"\b((?:GPIO|IO)\d{1,2})\b"
         r"(?:\s*[/|,]\s*|\s+)"
@@ -216,6 +221,13 @@ def extract_pins(text: str) -> list[dict]:
     for m in pat3.finditer(text):
         pin = m.group(1)
         func = m.group(2)
+
+        # Skip state keywords -- they describe pin levels, not functions
+        if func in _GPIO_STATE_KEYWORDS:
+            continue
+        # Skip references to other GPIO pins (e.g. "GPIO5 GPIO9" in sequences)
+        if re.match(r"^(?:GPIO|IO)\d{1,2}$", func):
+            continue
 
         key = f"{pin}:{func}"
         if key in seen_pins:

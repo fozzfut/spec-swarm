@@ -175,16 +175,37 @@ class SpecStore:
     def post_to_swarm_kb(self, session_id: str, tool: str, category: str, data: dict) -> bool:
         """Post data to swarm-kb if available. Returns True on success."""
         try:
-            from swarm_kb import KnowledgeBase
-            kb = KnowledgeBase()
-            kb.store(
-                tool=tool,
-                category=category,
-                data=data,
-                metadata={"session_id": session_id, "timestamp": now_iso()},
-            )
+            from swarm_kb.finding_writer import FindingWriter
+            from swarm_kb.config import SuiteConfig
+
+            config = SuiteConfig.load()
+            writer = FindingWriter(tool, session_id, config)
+
+            constraints = data.get("constraints", [])
+            if constraints:
+                writer.post_batch([
+                    {
+                        "type": "hw_constraint",
+                        "category": c.get("category", category),
+                        "component": c.get("component", ""),
+                        "source": c.get("source", ""),
+                        "constraint": c.get("constraint", ""),
+                        "critical": c.get("critical", False),
+                    }
+                    for c in constraints
+                ])
+            else:
+                writer.post({
+                    "type": "hw_constraint",
+                    "category": category,
+                    "data": data,
+                })
             return True
         except ImportError:
             return False
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to post to swarm-kb: %s", exc,
+            )
             return False
