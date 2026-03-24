@@ -78,6 +78,27 @@ def extract_registers(text: str) -> list[dict]:
             "fields": [],
         })
 
+    # Build register position index for field assignment
+    # Each entry is (text_position, register_index)
+    register_positions: list[tuple[int, int]] = []
+    reg_idx = 0
+    for m in pat1.finditer(text):
+        addr = m.group(1).replace("_", "")
+        # Find the register with this address
+        for i, r in enumerate(registers):
+            if r["address"] == addr and i >= reg_idx:
+                register_positions.append((m.start(), i))
+                reg_idx = i + 1
+                break
+    for m in pat2.finditer(text):
+        addr = m.group(2).replace("_", "")
+        for i, r in enumerate(registers):
+            if r["address"] == addr and i >= reg_idx:
+                register_positions.append((m.start(), i))
+                reg_idx = i + 1
+                break
+    register_positions.sort(key=lambda x: x[0])
+
     # Extract bit fields for registers already found
     # Pattern: "Bits X:Y  FIELD_NAME  rw  Description" or "Bit X  FIELD_NAME"
     field_pat = re.compile(
@@ -101,8 +122,17 @@ def extract_registers(text: str) -> list[dict]:
             "description": desc,
         }
 
-        # Attach to the most recently found register
-        if registers:
+        # Attach to the nearest preceding register based on text position
+        field_pos = m.start()
+        owner_idx = -1
+        for pos, idx in reversed(register_positions):
+            if pos <= field_pos:
+                owner_idx = idx
+                break
+        if owner_idx >= 0 and owner_idx < len(registers):
+            registers[owner_idx]["fields"].append(field_info)
+        elif registers:
+            # Fallback: attach to last register if no position match
             registers[-1]["fields"].append(field_info)
 
     return registers

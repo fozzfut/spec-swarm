@@ -92,7 +92,7 @@ def generate_report(
         if spec.pins:
             lines.append("#### Pin Configuration")
             lines.append("| Pin | Function | AF | Direction | Notes |")
-            lines.append("|-----|----------|----|-----------+-------|")
+            lines.append("|-----|----------|----|-----------|-------|")
             for pin in spec.pins:
                 af = str(pin.af_number) if pin.af_number >= 0 else ""
                 lines.append(

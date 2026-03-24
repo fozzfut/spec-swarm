@@ -904,8 +904,11 @@ def create_mcp_server():
 
         # Optionally write to output_path
         if output_path:
+            out = Path(output_path).resolve()
+            cwd = Path.cwd().resolve()
+            if not out.is_relative_to(cwd):
+                return json.dumps({"error": "output_path must be under current directory"})
             try:
-                out = Path(output_path)
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text(report_md, encoding="utf-8")
             except OSError:

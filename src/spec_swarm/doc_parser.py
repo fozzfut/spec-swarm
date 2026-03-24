@@ -43,24 +43,25 @@ def _parse_pdf(path: Path) -> dict:
         )
 
     doc = fitz.open(str(path))
-    pages_text: list[str] = []
-    metadata: dict = {}
+    try:
+        pages_text: list[str] = []
+        metadata: dict = {}
 
-    # Extract document metadata
-    doc_meta = doc.metadata
-    if doc_meta:
-        for key in ("title", "author", "subject", "keywords", "creator"):
-            val = doc_meta.get(key, "")
-            if val:
-                metadata[key] = val
+        # Extract document metadata
+        doc_meta = doc.metadata
+        if doc_meta:
+            for key in ("title", "author", "subject", "keywords", "creator"):
+                val = doc_meta.get(key, "")
+                if val:
+                    metadata[key] = val
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        text = page.get_text("text")
-        if text.strip():
-            pages_text.append(text)
-
-    doc.close()
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text("text")
+            if text.strip():
+                pages_text.append(text)
+    finally:
+        doc.close()
 
     full_text = "\n\n--- Page Break ---\n\n".join(pages_text)
 

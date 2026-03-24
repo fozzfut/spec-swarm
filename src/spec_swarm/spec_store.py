@@ -9,6 +9,7 @@ Storage layout:
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,7 @@ class SpecStore:
     def __init__(self, base_path: Path | None = None):
         self._base = base_path or _default_base_path()
         self._base.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
         # In-memory cache: session_id -> SpecSession
         self._sessions: dict[str, SpecSession] = {}
         self._load_existing_sessions()
@@ -70,16 +72,20 @@ class SpecStore:
 
     def _session_dir(self, session_id: str) -> Path:
         """Get or create session directory."""
+        # Prevent path traversal
+        if ".." in session_id or "/" in session_id or "\\" in session_id:
+            raise ValueError(f"Invalid session_id: {session_id}")
         d = self._base / session_id
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     def create_session(self, project_path: str) -> SpecSession:
         """Create a new spec analysis session."""
-        session = SpecSession(project_path=project_path)
-        self._sessions[session.id] = session
-        self._save_meta(session)
-        return session
+        with self._lock:
+            session = SpecSession(project_path=project_path)
+            self._sessions[session.id] = session
+            self._save_meta(session)
+            return session
 
     def get_session(self, session_id: str) -> SpecSession:
         """Get a session by ID. Raises KeyError if not found."""
@@ -102,9 +108,10 @@ class SpecStore:
 
     def add_spec(self, session_id: str, spec: HardwareSpec) -> None:
         """Add a hardware spec to a session."""
-        session = self.get_session(session_id)
-        session.specs.append(spec)
-        self._save_specs(session)
+        with self._lock:
+            session = self.get_session(session_id)
+            session.specs.append(spec)
+            self._save_specs(session)
 
     def get_specs(self, session_id: str) -> list[HardwareSpec]:
         """Get all specs for a session."""
@@ -113,10 +120,11 @@ class SpecStore:
 
     def add_finding(self, session_id: str, finding: dict) -> None:
         """Add a finding (conflict, missing info, etc.) to a session."""
-        session = self.get_session(session_id)
-        finding.setdefault("timestamp", now_iso())
-        session.findings.append(finding)
-        self._save_findings(session)
+        with self._lock:
+            session = self.get_session(session_id)
+            finding.setdefault("timestamp", now_iso())
+            session.findings.append(finding)
+            self._save_findings(session)
 
     def get_findings(self, session_id: str) -> list[dict]:
         """Get all findings for a session."""
@@ -135,12 +143,14 @@ class SpecStore:
 
     def _save_specs(self, session: SpecSession) -> None:
         """Save all specs to jsonl file."""
+        # Caller must hold self._lock
         d = self._session_dir(session.id)
         lines = [json.dumps(s.to_dict(), separators=(",", ":")) for s in session.specs]
         (d / "specs.jsonl").write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
 
     def _save_findings(self, session: SpecSession) -> None:
         """Save findings to JSON file."""
+        # Caller must hold self._lock
         d = self._session_dir(session.id)
         (d / "findings.json").write_text(
             json.dumps(session.findings, indent=2), encoding="utf-8"
